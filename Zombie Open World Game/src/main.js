@@ -901,6 +901,7 @@ let crosshairSpread = 0;
 let crosshairFireImpulse = 0;
 let gameOver = false;
 let pointerLocked = false;
+let startTransitionActive = false;
 let weaponRecoil = 0;
 let weaponKick = 0;
 let lookSwayX = 0;
@@ -1083,6 +1084,7 @@ function updateAdaptiveQuality(frameDt) {
 
 function refreshVisibleVisionBlockers() {
   visibleVisionBlockers.length = 0;
+  if (activeMapConfig.id === "outbreak_city") return;
   const origin = activeVehicle ? activeVehicle.mesh.position : player.position;
   const maxDistanceSq = 85 * 85;
   const maxBlockers = 220;
@@ -1122,7 +1124,7 @@ if (inventoryUI.closeBtn) {
     inventoryOpen = false;
     hideInventory(inventoryUI);
     paused = false;
-    if (!gameOver) canvas.requestPointerLock();
+    if (!gameOver) requestPointerLockSafe();
   });
 }
 
@@ -1176,7 +1178,72 @@ function killPlayer(reason = "You died.") {
 const _segDir = new THREE.Vector3();
 const _segRay = new THREE.Raycaster();
 const _segHits = [];
+function segmentIntersectsAabbXZ(ax, az, bx, bz, minX, maxX, minZ, maxZ) {
+  const dx = bx - ax;
+  const dz = bz - az;
+  let tMin = 0;
+  let tMax = 1;
+
+  if (Math.abs(dx) < 0.000001) {
+    if (ax < minX || ax > maxX) return false;
+  } else {
+    let t1 = (minX - ax) / dx;
+    let t2 = (maxX - ax) / dx;
+    if (t1 > t2) {
+      const tmp = t1;
+      t1 = t2;
+      t2 = tmp;
+    }
+    tMin = Math.max(tMin, t1);
+    tMax = Math.min(tMax, t2);
+    if (tMin > tMax) return false;
+  }
+
+  if (Math.abs(dz) < 0.000001) {
+    if (az < minZ || az > maxZ) return false;
+  } else {
+    let t1 = (minZ - az) / dz;
+    let t2 = (maxZ - az) / dz;
+    if (t1 > t2) {
+      const tmp = t1;
+      t1 = t2;
+      t2 = tmp;
+    }
+    tMin = Math.max(tMin, t1);
+    tMax = Math.min(tMax, t2);
+    if (tMin > tMax) return false;
+  }
+
+  return true;
+}
+
+function segmentBlockedByStaticColliders(from, to, pad = 0.08) {
+  const midX = (from.x + to.x) * 0.5;
+  const midZ = (from.z + to.z) * 0.5;
+  const range = Math.max(Math.abs(to.x - from.x), Math.abs(to.z - from.z)) * 0.5 + STATIC_COLLIDER_CELL_SIZE + pad;
+  const candidates = getNearbyStaticColliders(midX, midZ, range);
+  for (let i = 0; i < candidates.length; i += 1) {
+    const c = candidates[i];
+    if (segmentIntersectsAabbXZ(
+      from.x,
+      from.z,
+      to.x,
+      to.z,
+      c.minX - pad,
+      c.maxX + pad,
+      c.minZ - pad,
+      c.maxZ + pad,
+    )) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function segmentBlockedByScenery(from, to) {
+  if (activeMapConfig.id === "outbreak_city") {
+    return segmentBlockedByStaticColliders(from, to, 0.08);
+  }
   _segDir.subVectors(to, from);
   const dist = _segDir.length();
   if (dist <= 0.0001) return false;
@@ -2376,6 +2443,9 @@ function createTeammate(x, z, index, akTemplate = null, remingtonTemplate = null
     visionFovCos: Math.cos(THREE.MathUtils.degToRad(72)),
     currentTarget: null,
     targetMemory: 0,
+    targetScanTimer: 0,
+    targetScanCursor: Math.floor(Math.random() * 1000),
+    visibleTarget: null,
     lastKnownTargetPosition: new THREE.Vector3(),
     walkPhase: Math.random() * Math.PI * 2,
     hp: 100,
@@ -3348,9 +3418,21 @@ function addZombie(x, z, forceType = null) {
 }
 
 function spawnZombieNearPlayer() {
-  const angle = Math.random() * Math.PI * 2;
-  const distance = 25 + Math.random() * 35;
-  addZombie(player.position.x + Math.cos(angle) * distance, player.position.z + Math.sin(angle) * distance);
+  const spawn = findClearZombieSpawnNear(player.position.x, player.position.z, 25, 60);
+  addZombie(spawn.x, spawn.z);
+}
+
+function findClearZombieSpawnNear(originX, originZ, minDistance = 25, maxDistance = 60, attempts = 14) {
+  let fallback = null;
+  for (let i = 0; i < attempts; i += 1) {
+    const angle = Math.random() * Math.PI * 2;
+    const distance = minDistance + Math.random() * Math.max(1, maxDistance - minDistance);
+    const x = originX + Math.cos(angle) * distance;
+    const z = originZ + Math.sin(angle) * distance;
+    if (!fallback) fallback = { x, z };
+    if (isCircleClearOfStatics(x, z, ZOMBIE_RADIUS + 0.45)) return { x, z };
+  }
+  return fallback || { x: originX + minDistance, z: originZ };
 }
 
 // ─── Vehicle System ─────────────────────────────────────────────────────────
@@ -3625,6 +3707,9 @@ const _teammateRetreatGoal = new THREE.Vector3();
 const _losHits = [];
 
 function hasLineOfSight(origin, targetPosition) {
+  if (activeMapConfig.id === "outbreak_city") {
+    return !segmentBlockedByStaticColliders(origin, targetPosition, 0.12);
+  }
   _losDirection.subVectors(targetPosition, origin);
   const distance = _losDirection.length();
   if (distance <= 0.001) return true;
@@ -3659,6 +3744,60 @@ function canTeammateSeeZombie(mate, zombie) {
 
   _losHeadVec.set(zombie.mesh.position.x, zombie.mesh.position.y + 2.05, zombie.mesh.position.z);
   return hasLineOfSight(_eyeVec, _chestVec) || hasLineOfSight(_eyeVec, _losHeadVec);
+}
+
+const _mateScanZombies = new Array(4).fill(null);
+const _mateScanDistances = new Array(4).fill(Infinity);
+
+function teammateScanInterval() {
+  if (activeMapConfig.id === "outbreak_city") {
+    return adaptiveQuality.level >= 1 ? 0.32 : 0.24;
+  }
+  return adaptiveQuality.level >= 1 ? 0.22 : 0.14;
+}
+
+function findVisibleZombieForMate(mate) {
+  const count = zombies.length;
+  if (!count) return null;
+
+  if (mate.currentTarget && zombies.includes(mate.currentTarget) && canTeammateSeeZombie(mate, mate.currentTarget)) {
+    return mate.currentTarget;
+  }
+
+  for (let i = 0; i < _mateScanZombies.length; i += 1) {
+    _mateScanZombies[i] = null;
+    _mateScanDistances[i] = Infinity;
+  }
+
+  const scanLimit = activeMapConfig.id === "outbreak_city"
+    ? Math.min(count, adaptiveQuality.level >= 1 ? 10 : 14)
+    : count;
+  const start = mate.targetScanCursor % count;
+  mate.targetScanCursor = (start + scanLimit) % count;
+  const visionRangeSq = mate.visionRange * mate.visionRange;
+
+  for (let step = 0; step < scanLimit; step += 1) {
+    const zombie = zombies[(start + step) % count];
+    if (!zombie) continue;
+    const d2 = mate.mesh.position.distanceToSquared(zombie.mesh.position);
+    if (d2 > visionRangeSq || d2 >= _mateScanDistances[_mateScanDistances.length - 1]) continue;
+    for (let slot = 0; slot < _mateScanDistances.length; slot += 1) {
+      if (d2 >= _mateScanDistances[slot]) continue;
+      for (let shift = _mateScanDistances.length - 1; shift > slot; shift -= 1) {
+        _mateScanDistances[shift] = _mateScanDistances[shift - 1];
+        _mateScanZombies[shift] = _mateScanZombies[shift - 1];
+      }
+      _mateScanDistances[slot] = d2;
+      _mateScanZombies[slot] = zombie;
+      break;
+    }
+  }
+
+  for (let i = 0; i < _mateScanZombies.length; i += 1) {
+    const zombie = _mateScanZombies[i];
+    if (zombie && canTeammateSeeZombie(mate, zombie)) return zombie;
+  }
+  return null;
 }
 
 function computeCurrentBulletSpread(weapon) {
@@ -4487,15 +4626,12 @@ function updateTeammates(dt) {
       .copy(player.position)
       .add(_tempVec3.copy(mate.followOffset).applyAxisAngle(_worldAxisY, player.yaw));
 
-    let visibleTarget = null;
-    let visibleDistanceSq = Infinity;
-    for (const zombie of zombies) {
-      if (!canTeammateSeeZombie(mate, zombie)) continue;
-      const d2 = mate.mesh.position.distanceToSquared(zombie.mesh.position);
-      if (d2 < visibleDistanceSq) {
-        visibleDistanceSq = d2;
-        visibleTarget = zombie;
-      }
+    mate.targetScanTimer -= dt;
+    let visibleTarget = mate.visibleTarget && zombies.includes(mate.visibleTarget) ? mate.visibleTarget : null;
+    if (mate.targetScanTimer <= 0 || !visibleTarget || !mate.currentTarget) {
+      visibleTarget = findVisibleZombieForMate(mate);
+      mate.visibleTarget = visibleTarget;
+      mate.targetScanTimer = teammateScanInterval() + Math.random() * 0.04;
     }
 
     if (visibleTarget) {
@@ -5316,7 +5452,7 @@ function closeUpgradeBench() {
   upgradeBenchOpen = false;
   hideUpgradeBench(upgradeBenchUI);
   paused = false;
-  if (!gameOver) canvas.requestPointerLock();
+  if (!gameOver) requestPointerLockSafe();
 }
 
 const inventoryCraftHooks = {
@@ -5354,7 +5490,7 @@ function closeInventory() {
   inventoryOpen = false;
   hideInventory(inventoryUI);
   paused = false;
-  if (!gameOver) canvas.requestPointerLock();
+  if (!gameOver) requestPointerLockSafe();
 }
 
 function updateHUDMaterials() {
@@ -8516,7 +8652,10 @@ function animate(nowMs) {
       const zz = player.position.z + Math.sin(a) * dist;
       // Mostly runners with the occasional brute to break formation.
       const type = Math.random() < 0.85 ? "runner" : "brute";
-      addZombie(zx, zz, type);
+      const spawn = isCircleClearOfStatics(zx, zz, ZOMBIE_RADIUS + 0.45)
+        ? { x: zx, z: zz }
+        : findClearZombieSpawnNear(player.position.x, player.position.z, 34, 58, 8);
+      addZombie(spawn.x, spawn.z, type);
     } else if (eventResult && eventResult.type === "tide_end") {
       messageEl.textContent = "The tide subsides...";
     } else if (eventResult && eventResult.type === "broadcast_end") {
@@ -8688,9 +8827,29 @@ function animate(nowMs) {
   requestAnimationFrame(animate);
 }
 
+function requestPointerLockSafe() {
+  if (pointerLocked || !canvas?.requestPointerLock) return;
+  try {
+    const lockResult = canvas.requestPointerLock();
+    if (lockResult && typeof lockResult.catch === "function") {
+      lockResult.catch(() => {
+        if (gameState === "PLAYING" && !pointerLocked && messageEl) {
+          messageEl.textContent = "Click the game view to capture mouse look.";
+        }
+      });
+    }
+  } catch {
+    if (gameState === "PLAYING" && !pointerLocked && messageEl) {
+      messageEl.textContent = "Click the game view to capture mouse look.";
+    }
+  }
+}
+
 canvas.addEventListener("click", async () => {
   await ensureAudioUnlocked();
-  if (!pointerLocked && gameState !== "PLAYING") canvas.requestPointerLock();
+  if (!pointerLocked && !gameOver && (gameState === "PLAYING" || gameState === "MENU_TITLE" || gameState === "MENU_PAUSE")) {
+    requestPointerLockSafe();
+  }
 });
 
 let mouseLeftHeld = false;
@@ -8708,9 +8867,11 @@ window.addEventListener("mouseup", (e) => {
 document.addEventListener("pointerlockchange", () => {
   pointerLocked = document.pointerLockElement === canvas;
   if (pointerLocked && !gameOver) {
-    startPlaying();
-    messageEl.textContent = "Survive. Loot drops from zombies.";
-  } else if (!pointerLocked && !gameOver) {
+    if (!startTransitionActive) {
+      startPlaying();
+      messageEl.textContent = "Survive. Loot drops from zombies.";
+    }
+  } else if (!pointerLocked && !gameOver && gameState === "PLAYING" && !startTransitionActive) {
     clearInputState();
     paused = true;
     setMenuMode("pause");
@@ -8787,7 +8948,7 @@ window.addEventListener("keydown", (e) => {
       setMenuMode("pause");
       messageEl.textContent = "Paused.";
     } else if (gameState === "MENU_PAUSE" && !gameOver) {
-      canvas.requestPointerLock();
+      requestPointerLockSafe();
     }
   }
   if (e.code === "KeyM") {
@@ -8959,6 +9120,7 @@ window.addEventListener("resize", () => {
 const _prewarmGeo = new THREE.BoxGeometry(0.01, 0.01, 0.01);
 _prewarmGeo.userData.preventDispose = true;
 let _prewarmRan = false;
+const SHADER_PREWARM_TIMEOUT_MS = 2500;
 async function prewarmShaders() {
   // Already prewarmed once per session — subsequent Start clicks don't need
   // to re-pay the cost because the WebGL shader cache persists for the page.
@@ -9047,11 +9209,29 @@ async function prewarmShaders() {
   scene.add(warmupGroup);
 
   try {
+    let timeoutId = null;
+    let timedOut = false;
+    const timeoutPromise = new Promise((resolve) => {
+      timeoutId = setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, SHADER_PREWARM_TIMEOUT_MS);
+    });
+    let compilePromise;
     if (typeof renderer.compileAsync === "function") {
-      await renderer.compileAsync(scene, camera);
+      compilePromise = renderer.compileAsync(scene, camera);
     } else if (typeof renderer.compile === "function") {
       renderer.compile(scene, camera);
+      compilePromise = Promise.resolve();
+    } else {
+      compilePromise = Promise.resolve();
     }
+    compilePromise = Promise.resolve(compilePromise).catch((err) => {
+      console.warn("[DeadTakeover] shader prewarm failed:", err);
+    });
+    await Promise.race([compilePromise, timeoutPromise]);
+    if (timeoutId !== null) clearTimeout(timeoutId);
+    if (timedOut) console.warn("[DeadTakeover] shader prewarm timed out; starting gameplay anyway.");
     // (4) One explicit render. compileAsync only links shader programs — the
     // actual GLSL→GPU machine-code compile happens on first USE on some
     // browsers/drivers (Chrome on Windows is the most common culprit). A
@@ -9071,8 +9251,11 @@ async function prewarmShaders() {
 
 startBtnEl.addEventListener("click", async () => {
   if (gameState !== "MENU_TITLE") return;
+  startTransitionActive = true;
   playSfx("ui_click", 1);
-  await ensureAudioUnlocked();
+  const audioUnlock = ensureAudioUnlocked();
+  requestPointerLockSafe();
+  await audioUnlock;
   if (mapDirty) {
     activeMapConfig = mapById(pendingMapId);
     pickChunkRadiusForMap();
@@ -9083,6 +9266,7 @@ startBtnEl.addEventListener("click", async () => {
   } catch (startErr) {
     console.error("[DeadTakeover] resetWorldForNewMap failed:", startErr);
     // Fall back to a clean page reload so the player isn't stuck.
+    startTransitionActive = false;
     window.location.reload();
     return;
   }
@@ -9091,14 +9275,19 @@ startBtnEl.addEventListener("click", async () => {
   // happened yet. The text is replaced as soon as gameplay logic resumes.
   if (messageEl) messageEl.textContent = "Compiling shaders…";
   await prewarmShaders();
-  canvas.requestPointerLock();
+  startTransitionActive = false;
+  startPlaying();
+  messageEl.textContent = pointerLocked
+    ? "Survive. Loot drops from zombies."
+    : "Survive. Click the game view to capture mouse look.";
 });
 
 resumeBtnEl.addEventListener("click", async () => {
   if (gameState !== "MENU_PAUSE" || gameOver) return;
   playSfx("ui_click", 1);
-  await ensureAudioUnlocked();
-  if (!gameOver) canvas.requestPointerLock();
+  const audioUnlock = ensureAudioUnlocked();
+  if (!gameOver) requestPointerLockSafe();
+  await audioUnlock;
 });
 
 restartBtnEl.addEventListener("click", () => {
@@ -9110,8 +9299,11 @@ restartBtnEl.addEventListener("click", () => {
 
 continueBtnEl.addEventListener("click", async () => {
   if (gameState !== "MENU_TITLE") return;
+  startTransitionActive = true;
   playSfx("ui_click", 1);
-  await ensureAudioUnlocked();
+  const audioUnlock = ensureAudioUnlocked();
+  requestPointerLockSafe();
+  await audioUnlock;
 
   // Peek at the saved map so we reset the world for the correct one
   let savedMapId = null;
@@ -9136,13 +9328,18 @@ continueBtnEl.addEventListener("click", async () => {
     resetWorldForNewMap();
   } catch (continueErr) {
     console.error("[DeadTakeover] continue resetWorldForNewMap failed:", continueErr);
+    startTransitionActive = false;
     window.location.reload();
     return;
   }
   loadRun();
   if (messageEl) messageEl.textContent = "Compiling shaders…";
   await prewarmShaders();
-  canvas.requestPointerLock();
+  startTransitionActive = false;
+  startPlaying();
+  messageEl.textContent = pointerLocked
+    ? "Survive. Loot drops from zombies."
+    : "Survive. Click the game view to capture mouse look.";
 });
 
 audioBtnEl.addEventListener("click", async () => {

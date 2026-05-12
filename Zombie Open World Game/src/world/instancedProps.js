@@ -44,6 +44,30 @@ const _tmpQuat = new THREE.Quaternion();
 const _tmpScale = new THREE.Vector3();
 const _axisY = new THREE.Vector3(0, 1, 0);
 
+function removeFreeSlot(bucket, slot) {
+  const idx = bucket.freeSlots.indexOf(slot);
+  if (idx < 0) return;
+  const last = bucket.freeSlots.pop();
+  if (idx < bucket.freeSlots.length) bucket.freeSlots[idx] = last;
+}
+
+function setBucketCount(bucket, count) {
+  bucket.highWater = count;
+  for (const m of bucket.meshes) {
+    m.instMesh.count = count;
+  }
+}
+
+function trimReleasedTail(bucket) {
+  while (bucket.nextSlot > 0 && bucket.freeSlotSet.has(bucket.nextSlot - 1)) {
+    const slot = bucket.nextSlot - 1;
+    bucket.freeSlotSet.delete(slot);
+    removeFreeSlot(bucket, slot);
+    bucket.nextSlot -= 1;
+  }
+  setBucketCount(bucket, bucket.nextSlot);
+}
+
 /** Build the InstancedMesh buckets for a model id and add them to the scene. */
 async function prepareBucket(modelId, scene) {
   if (_buckets.has(modelId)) return _buckets.get(modelId);
@@ -122,6 +146,7 @@ async function prepareBucket(modelId, scene) {
       def,
       meshes,
       freeSlots: [],
+      freeSlotSet: new Set(),
       nextSlot: 0,
       highWater: 0,
       groundY,
@@ -145,6 +170,7 @@ export async function addPropInstance(modelId, scene, { x = 0, y = 0, z = 0, yaw
   let slot;
   if (bucket.freeSlots.length > 0) {
     slot = bucket.freeSlots.pop();
+    bucket.freeSlotSet.delete(slot);
   } else if (bucket.nextSlot < MAX_INSTANCES_PER_PROP) {
     slot = bucket.nextSlot++;
   } else {
@@ -185,11 +211,14 @@ export async function addPropInstance(modelId, scene, { x = 0, y = 0, z = 0, yaw
 export function releasePropInstance(handle) {
   if (!handle) return;
   const { bucket, slot } = handle;
+  if (bucket.freeSlotSet.has(slot)) return;
   for (const m of bucket.meshes) {
     m.instMesh.setMatrixAt(slot, _zeroScaleMat);
     m.instMesh.instanceMatrix.needsUpdate = true;
   }
   bucket.freeSlots.push(slot);
+  bucket.freeSlotSet.add(slot);
+  trimReleasedTail(bucket);
 }
 
 /** Compute the world-space AABB of a single instance. Used by the static-
@@ -217,20 +246,16 @@ export function resetInstancedPropsForNewWorld() {
     bucket.firstSpawnDelivered = false;
     // Drop any lingering instances so freed slots are available again.
     bucket.freeSlots.length = 0;
+    bucket.freeSlotSet.clear();
     bucket.nextSlot = 0;
-    bucket.highWater = 0;
-    for (const m of bucket.meshes) {
-      m.instMesh.count = 0;
-    }
+    setBucketCount(bucket, 0);
   }
   for (const bucket of _templateBuckets.values()) {
     bucket.firstSpawnDelivered = false;
     bucket.freeSlots.length = 0;
+    bucket.freeSlotSet.clear();
     bucket.nextSlot = 0;
-    bucket.highWater = 0;
-    for (const m of bucket.meshes) {
-      m.instMesh.count = 0;
-    }
+    setBucketCount(bucket, 0);
   }
 }
 
@@ -292,6 +317,7 @@ function createTemplateBucket(template, scene) {
     template,
     meshes,
     freeSlots: [],
+    freeSlotSet: new Set(),
     nextSlot: 0,
     highWater: 0,
     templateBox,
@@ -317,6 +343,7 @@ export function addTemplateInstance(template, scene, { x = 0, y = 0, z = 0, yaw 
   let slot;
   if (bucket.freeSlots.length > 0) {
     slot = bucket.freeSlots.pop();
+    bucket.freeSlotSet.delete(slot);
   } else if (bucket.nextSlot < MAX_TEMPLATE_INSTANCES) {
     slot = bucket.nextSlot++;
   } else {
