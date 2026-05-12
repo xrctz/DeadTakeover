@@ -38,6 +38,7 @@ import {
   preloadInstancedProps,
   resetInstancedPropsForNewWorld,
   addTemplateInstance,
+  flushDirtyBuckets,
 } from "./world/instancedProps.js";
 import { modelsByCategory, getModelDef } from "./world/modelRegistry.js";
 import { buildZombieMesh, statsForType as zombieStatsForType, rollZombieType, SPECIAL_INFECTED_TYPES } from "./entities/zombie.js";
@@ -8932,6 +8933,7 @@ function animate(nowMs) {
   updateHud(frameDt);
   updateFloatingDamageNums(dt);
   updateVehicleHud();
+  flushDirtyBuckets();
   renderer.render(scene, camera);
   maybeDrawEnemyHealthBars(frameDt);
   requestAnimationFrame(animate);

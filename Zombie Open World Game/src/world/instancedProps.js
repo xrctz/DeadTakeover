@@ -44,6 +44,28 @@ const _tmpQuat = new THREE.Quaternion();
 const _tmpScale = new THREE.Vector3();
 const _axisY = new THREE.Vector3(0, 1, 0);
 
+// Buckets whose instanceMatrix has been written to this frame but not
+// yet flagged for GPU upload. Flushing once per frame collapses N
+// redundant needsUpdate=true calls into a single upload per bucket.
+const _dirtyBuckets = new Set();
+
+/** Mark a bucket's InstancedMesh matrices as dirty. The actual
+ *  `needsUpdate = true` is deferred to a single flush per frame so
+ *  multiple spawns in one frame don't trigger redundant GPU uploads. */
+function markBucketDirty(bucket) {
+  _dirtyBuckets.add(bucket);
+}
+
+/** Flush all dirty buckets — call once per frame before rendering. */
+export function flushDirtyBuckets() {
+  for (const bucket of _dirtyBuckets) {
+    for (const m of bucket.meshes) {
+      m.instMesh.instanceMatrix.needsUpdate = true;
+    }
+  }
+  _dirtyBuckets.clear();
+}
+
 function removeFreeSlot(bucket, slot) {
   const idx = bucket.freeSlots.indexOf(slot);
   if (idx < 0) return;
@@ -190,9 +212,9 @@ export async function addPropInstance(modelId, scene, { x = 0, y = 0, z = 0, yaw
   for (const m of bucket.meshes) {
     _tmpMatrixB.multiplyMatrices(_tmpMatrix, m.localOffsetMatrix);
     m.instMesh.setMatrixAt(slot, _tmpMatrixB);
-    m.instMesh.instanceMatrix.needsUpdate = true;
     if (slot >= m.instMesh.count) m.instMesh.count = slot + 1;
   }
+  markBucketDirty(bucket);
   if (slot >= bucket.highWater) bucket.highWater = slot + 1;
 
   const firstSpawn = !bucket.firstSpawnDelivered;
@@ -214,8 +236,8 @@ export function releasePropInstance(handle) {
   if (bucket.freeSlotSet.has(slot)) return;
   for (const m of bucket.meshes) {
     m.instMesh.setMatrixAt(slot, _zeroScaleMat);
-    m.instMesh.instanceMatrix.needsUpdate = true;
   }
+  markBucketDirty(bucket);
   bucket.freeSlots.push(slot);
   bucket.freeSlotSet.add(slot);
   trimReleasedTail(bucket);
@@ -361,9 +383,9 @@ export function addTemplateInstance(template, scene, { x = 0, y = 0, z = 0, yaw 
   for (const m of bucket.meshes) {
     _tmpMatrixB.multiplyMatrices(_tmpMatrix, m.localOffsetMatrix);
     m.instMesh.setMatrixAt(slot, _tmpMatrixB);
-    m.instMesh.instanceMatrix.needsUpdate = true;
     if (slot >= m.instMesh.count) m.instMesh.count = slot + 1;
   }
+  markBucketDirty(bucket);
   if (slot >= bucket.highWater) bucket.highWater = slot + 1;
 
   const firstSpawn = !bucket.firstSpawnDelivered;
