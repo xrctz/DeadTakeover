@@ -4295,6 +4295,9 @@ function updateBullets(dt) {
     for (let ci = 0; ci < candidates.length; ci += 1) {
       const zi = candidates[ci];
       const zombie = zombies[zi];
+      // Stale index: zombie may have been killed/removed by a previous bullet
+      // in this same frame. Skip safely instead of crashing on undefined.
+      if (!zombie) continue;
       const hit = getZombieHit(_bulletPrev, bullet.mesh.position, zombie);
       if (hit) {
         const hs = hit.part === "head";
