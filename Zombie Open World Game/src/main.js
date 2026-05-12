@@ -254,10 +254,23 @@ const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerH
 camera.position.set(0, 1.8, 6);
 scene.add(camera);
 
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+// Detect embedded mode (iframe in the hub website). When embedded, the canvas
+// is smaller and the user is rarely doing precision aiming at 4K crispness, so
+// we cap pixelRatio harder to claw back fill-rate. Standalone gets 1.0 base
+// (was 1.25), which on a 4K display means rendering 64% as many pixels for a
+// near-imperceptible quality drop.
+const IS_EMBEDDED = (function () {
+  try { return window.self !== window.top; } catch { return true; }
+})();
+const BASE_PIXEL_RATIO_CAP = IS_EMBEDDED ? 0.85 : 1.0;
+const renderer = new THREE.WebGLRenderer({
+  canvas,
+  antialias: !IS_EMBEDDED, // skip MSAA in the embedded panel; biggest GPU win
+  powerPreference: "high-performance",
+});
 renderer.setSize(window.innerWidth, window.innerHeight);
 // Initial pixel ratio must not depend on adaptiveQuality yet (declared later).
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, BASE_PIXEL_RATIO_CAP));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -274,11 +287,14 @@ sun.shadow.bias = -0.0002;
 sun.shadow.normalBias = 0.02;
 sun.shadow.mapSize.set(1024, 1024);
 sun.shadow.camera.near = 8;
-sun.shadow.camera.far = 130;
-sun.shadow.camera.left = -42;
-sun.shadow.camera.right = 42;
-sun.shadow.camera.top = 42;
-sun.shadow.camera.bottom = -42;
+// Tighter shadow frustum: 130 was rendering shadows ~2x further than fog reach,
+// burning texel density on offscreen geometry. 75 still covers everything the
+// fog (60-260) lets you actually see in front.
+sun.shadow.camera.far = 75;
+sun.shadow.camera.left = -32;
+sun.shadow.camera.right = 32;
+sun.shadow.camera.top = 32;
+sun.shadow.camera.bottom = -32;
 scene.add(sun);
 
 const textureLoader = new THREE.TextureLoader();
@@ -854,7 +870,13 @@ const weatherState = createWeather(scene);
 
 const adaptiveQuality = {
   level: 0,
-  pixelRatios: [Math.min(window.devicePixelRatio, 1.25), 1, 0.85],
+  // Tier the pixel ratio caps off the iframe-aware base. Embedded:
+  // 0.85 -> 0.7 -> 0.55. Standalone: 1.0 -> 0.85 -> 0.7.
+  pixelRatios: [
+    BASE_PIXEL_RATIO_CAP,
+    BASE_PIXEL_RATIO_CAP - 0.15,
+    BASE_PIXEL_RATIO_CAP - 0.3,
+  ],
   shadowsEnabled: true,
   frameSamples: [],
   averageFrameMs: 16.7,
@@ -893,14 +915,17 @@ function updateAdaptiveQuality(frameDt) {
   if (adaptiveQualityPollTimer > 0) return;
   adaptiveQualityPollTimer = 0.4;
 
-  if (adaptiveQuality.averageFrameMs > 24 && adaptiveQuality.level < 2) {
+  // Lower the downgrade threshold (24->20 ms, i.e. 50 fps instead of 41) so
+  // the system reacts before users feel the stutter. Recovery threshold
+  // tightened too (17.5->15 ms) to avoid flapping between levels.
+  if (adaptiveQuality.averageFrameMs > 20 && adaptiveQuality.level < 2) {
     adaptiveQuality.level += 1;
     adaptiveQualityRecoverTimer = 4;
     applyAdaptiveQuality();
     return;
   }
 
-  if (adaptiveQuality.averageFrameMs < 17.5 && adaptiveQuality.level > 0 && adaptiveQualityRecoverTimer <= 0) {
+  if (adaptiveQuality.averageFrameMs < 15 && adaptiveQuality.level > 0 && adaptiveQualityRecoverTimer <= 0) {
     adaptiveQuality.level -= 1;
     adaptiveQualityRecoverTimer = 3;
     applyAdaptiveQuality();
@@ -4383,7 +4408,14 @@ function updateZombies(dt) {
 
   const zombieCount = zombies.length;
   if (!zombieCount) return;
-  const fullStep = adaptiveQuality.level === 0 ? zombieCount : Math.max(12, Math.ceil(zombieCount * 0.55));
+  // Round-robin AI even at quality level 0. 60 Hz per zombie is wasted on a
+  // single JS thread for >20 zombies; humans cannot tell the difference between
+  // 30 Hz and 60 Hz zombie targeting. dt is unchanged so motion stays smooth
+  // because skipped zombies still get their next tick at 2x dt next frame.
+  // Quality levels 1/2 throttle further (down to ~55% of the herd per frame).
+  const fullStep = adaptiveQuality.level === 0
+    ? Math.max(12, Math.ceil(zombieCount * 0.55))
+    : Math.max(8, Math.ceil(zombieCount * 0.4));
   let processed = 0;
   for (let pass = 0; pass < zombieCount && processed < fullStep; pass += 1) {
     const i = (zombieAiUpdateCursor - pass + zombieCount) % zombieCount;
