@@ -7540,16 +7540,40 @@ function updateDeathCollapses(dt) {
     c.mesh.rotation.x = ease * (Math.PI * 0.45);
     c.mesh.rotation.z = ease * c.fallAngle;
     c.mesh.position.y -= ease * dt * 2.5;
-    // Fade out near end
+    // Fade out near end. Materials on the zombie mesh are usually SHARED across
+    // all live zombies (one zombieSkinMaterial, one zombieClothMaterial, etc.),
+    // so mutating m.opacity / m.transparent / m.depthWrite directly would
+    // silently flip every other zombie invisible too. The fix: on the first
+    // tick we enter the fade phase, clone every material on this dying mesh
+    // and mark the clones for disposal. Subsequent ticks only touch the
+    // clones. disposeObject3D below frees them when the collapse finishes.
     if (t > 0.7) {
-      c.mesh.traverse((o) => {
-        if (o.isMesh && o.material) {
-          const mats = Array.isArray(o.material) ? o.material : [o.material];
-          for (const m of mats) {
-            if (!m.transparent) { m.transparent = true; m.depthWrite = false; }
-            m.opacity = Math.max(0, 1 - (t - 0.7) / 0.3);
+      if (!c._fadeCloned) {
+        c._fadeCloned = true;
+        c.mesh.traverse((o) => {
+          if (!o.isMesh || !o.material) return;
+          if (Array.isArray(o.material)) {
+            o.material = o.material.map((mat) => {
+              const clone = mat.clone();
+              clone.userData.disposeWithMesh = true;
+              clone.transparent = true;
+              clone.depthWrite = false;
+              return clone;
+            });
+          } else {
+            const clone = o.material.clone();
+            clone.userData.disposeWithMesh = true;
+            clone.transparent = true;
+            clone.depthWrite = false;
+            o.material = clone;
           }
-        }
+        });
+      }
+      const fadeOpacity = Math.max(0, 1 - (t - 0.7) / 0.3);
+      c.mesh.traverse((o) => {
+        if (!o.isMesh || !o.material) return;
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        for (const m of mats) m.opacity = fadeOpacity;
       });
     }
     if (t >= 1) {
@@ -8488,6 +8512,28 @@ window.addEventListener("resize", () => {
   animate(0);
 })();
 
+/**
+ * Force three.js to compile every shader for every currently-visible material
+ * BEFORE the player can do anything. Without this, the first few seconds of
+ * gameplay are full of 50-200ms hitches as each new material/light/shadow
+ * permutation compiles its shader lazily on first render. Uses the async
+ * variant when available (Chrome supports KHR_parallel_shader_compile and
+ * offloads to background threads); falls back to sync compile otherwise.
+ * Errors are swallowed because precompile is best-effort: if it fails, the
+ * game still plays correctly, just with the original shader-compile hitches.
+ */
+async function prewarmShaders() {
+  try {
+    if (typeof renderer.compileAsync === "function") {
+      await renderer.compileAsync(scene, camera);
+    } else if (typeof renderer.compile === "function") {
+      renderer.compile(scene, camera);
+    }
+  } catch (err) {
+    console.warn("[DeadTakeover] shader prewarm failed:", err);
+  }
+}
+
 startBtnEl.addEventListener("click", async () => {
   if (gameState !== "MENU_TITLE") return;
   playSfx("ui_click", 1);
@@ -8504,6 +8550,7 @@ startBtnEl.addEventListener("click", async () => {
     window.location.reload();
     return;
   }
+  await prewarmShaders();
   canvas.requestPointerLock();
 });
 
@@ -8552,6 +8599,7 @@ continueBtnEl.addEventListener("click", async () => {
     return;
   }
   loadRun();
+  await prewarmShaders();
   canvas.requestPointerLock();
 });
 
