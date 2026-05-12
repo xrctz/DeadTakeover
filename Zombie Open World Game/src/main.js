@@ -1494,7 +1494,7 @@ function loadRun() {
         chunkStreamingBoostUntil = gameTime + CHUNK_STREAM_BOOST_SECONDS;
         const prewarmBudget = getChunkPrewarmBudget();
         ensureChunks(prewarmBudget);
-        drainChunkBuildQueue(CHUNK_PREWARM_SYNC_DRAIN);
+        // Prewarm drains gradually via per-frame drain — avoid synchronous stall
       }
     }
     player.yaw = Number.isFinite(save.playerYaw) ? save.playerYaw : player.yaw;
@@ -3364,7 +3364,11 @@ function resetWorldForNewMap() {
   applyAdaptiveQuality();
   const prewarmBudget = getChunkPrewarmBudget();
   ensureChunks(prewarmBudget);
-  drainChunkBuildQueue(CHUNK_PREWARM_SYNC_DRAIN);
+  // NOTE: We intentionally do NOT drain the chunk build queue here.
+  // The per-frame drain (CHUNK_BUILD_DRAIN_BASE = 1) will spread the
+  // prewarm across multiple frames, eliminating the ~150-200ms synchronous
+  // stall on Outbreak City startup. The player sees chunks stream in
+  // gradually instead of a frozen screen.
   initWeather();
   updateDayNight();
   for (let i = 0; i < 8; i += 1) spawnZombieNearPlayer();
@@ -9181,7 +9185,7 @@ window.addEventListener("resize", () => {
     }
     applyActiveMapVisuals();
     ensureChunks();
-    drainChunkBuildQueue(CHUNK_PREWARM_SYNC_DRAIN);
+    // Prewarm drains gradually via per-frame drain — avoid synchronous stall
     initWeather();
     updateDayNight();
     for (let i = 0; i < 8; i += 1) spawnZombieNearPlayer();
