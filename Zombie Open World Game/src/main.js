@@ -715,9 +715,17 @@ const chunkRadius = 4;
 const chunkGeometry = new THREE.PlaneGeometry(chunkSize, chunkSize, 24, 24);
 const CHUNK_STREAM_BUDGET = 4;
 const CHUNK_PREWARM_BUDGET = 20;
-const CHUNK_PREWARM_SYNC_DRAIN = 4;
+// Was 4 — only 4 chunks built synchronously at Start, so the remaining ~16
+// chunks streamed in during the first second of gameplay, each one a small
+// hitch as the terrain mesh + trees got built. Bumping to 18 absorbs almost
+// the entire prewarm budget in a single ~200ms freeze on Start (acceptable)
+// at the cost of zero chunk-build hitches in the first few seconds of play.
+const CHUNK_PREWARM_SYNC_DRAIN = 18;
 const CHUNK_STREAM_BOOST_SECONDS = 8;
-const CHUNK_BUILD_DRAIN_BASE = 1;
+// Was 1 — one chunk built per frame as the player moves means a tiny hitch
+// every time the streaming radius advances. 2 covers normal-speed movement
+// without the player ever waiting on a chunk to materialize.
+const CHUNK_BUILD_DRAIN_BASE = 2;
 const CHUNK_BUILD_DRAIN_BOOST = 3;
 const MAX_VALID_WORLD_ABS = chunkSize * (chunkRadius + 1) * 8;
 
@@ -8513,25 +8521,134 @@ window.addEventListener("resize", () => {
 })();
 
 /**
- * Force three.js to compile every shader for every currently-visible material
- * BEFORE the player can do anything. Without this, the first few seconds of
- * gameplay are full of 50-200ms hitches as each new material/light/shadow
- * permutation compiles its shader lazily on first render. Uses the async
- * variant when available (Chrome supports KHR_parallel_shader_compile and
- * offloads to background threads); falls back to sync compile otherwise.
+ * Force three.js to compile every shader the game will ever need BEFORE the
+ * player can do anything. Without this, the first few minutes of gameplay are
+ * full of 50-200ms hitches as each new material/light/shadow permutation
+ * compiles its shader lazily on first render. The user feels this as "lag for
+ * 2-3 minutes that gradually goes away" — exactly the symptom of a steadily
+ * filling shader cache.
+ *
+ * The trick: temporarily attach every lazy material to a tiny non-rendered
+ * mesh below the playable area, call compileAsync (which uses
+ * KHR_parallel_shader_compile to offload to background threads on Chrome),
+ * then do one throwaway render to force the GLSL→GPU machine code link, then
+ * dispose the warmup meshes. The shader programs stay in the WebGL context's
+ * cache and every effect renders hitch-free on first use.
+ *
  * Errors are swallowed because precompile is best-effort: if it fails, the
  * game still plays correctly, just with the original shader-compile hitches.
  */
+const _prewarmGeo = new THREE.BoxGeometry(0.01, 0.01, 0.01);
+_prewarmGeo.userData.preventDispose = true;
+let _prewarmRan = false;
 async function prewarmShaders() {
+  // Already prewarmed once per session — subsequent Start clicks don't need
+  // to re-pay the cost because the WebGL shader cache persists for the page.
+  if (_prewarmRan) return;
+  const warmupGroup = new THREE.Group();
+  warmupGroup.position.set(0, -2000, 0);
+  const disposableMaterials = [];
+
+  const addWarmupMesh = (mat) => {
+    if (!mat) return;
+    const m = new THREE.Mesh(_prewarmGeo, mat);
+    m.frustumCulled = false; // guarantee compile considers it even at y=-2000
+    m.castShadow = false;
+    m.receiveShadow = false;
+    warmupGroup.add(m);
+  };
+
+  // (1) Module-scope shared materials whose first attach-to-mesh is lazy.
+  // Special infected only spawn after wave 2-3, so their shaders haven't been
+  // compiled until they appear — that's where most of the mid-game hitches
+  // come from. Same for melee, acid spit, tree variants, teammate cloth.
+  for (const mat of [
+    spitterSkinMat, spitterClothMat, acidSacMat,
+    hunterSkinMat, hunterClothMat,
+    chargerSkinMat, chargerClothMat,
+    juggernautSkinMat, juggernautClothMat, juggernautArmorMat,
+    boomerSkinMat, boomerClothMat, boomerBloatMat,
+    screamerSkinMat, screamerClothMat,
+    _acidSpitMat, _meleeKnifeMat, _meleeSlashMat,
+    teammateJacketMaterial, teammatePantsMaterial,
+    teammateVestMaterial, teammateSkinMaterial,
+    trunkMaterial, leafMaterial,
+    ...Object.values(eyeMaterials),
+  ]) {
+    addWarmupMesh(mat);
+  }
+
+  // (2) Sample materials matching the lazy spawn* patterns. Three.js generates
+  // a unique shader program per (material type + transparent + map + side +
+  // depth flags) combo, so we need one of each combination, not one per
+  // color. The set below covers all distinct shader permutations spawned
+  // during gameplay.
+  const variantSpecs = [
+    // Standard particle (blood/fire/spark/dust/flash/flamepuff)
+    { type: "basic", opts: { color: 0xffaa00, transparent: true, opacity: 0.8, depthWrite: false } },
+    // Decal with diffuse texture (blood splatter on ground)
+    { type: "basic", opts: { color: 0x882020, map: bloodSplatterTex, transparent: true, opacity: 0.95, depthWrite: false } },
+    // Toxic cloud — DoubleSide is a distinct shader variant
+    { type: "basic", opts: { color: 0x22ff44, transparent: true, opacity: 0.15, side: THREE.DoubleSide, depthWrite: false } },
+    // Opaque bullet (no transparent flag = different shader)
+    { type: "basic", opts: { color: 0xfff5b5 } },
+    // Rocket trail (transparent + non-default opacity)
+    { type: "basic", opts: { color: 0xff8800, transparent: true, opacity: 0.7, depthWrite: false } },
+  ];
+  for (const spec of variantSpecs) {
+    const Ctor = spec.type === "basic" ? THREE.MeshBasicMaterial : THREE.MeshStandardMaterial;
+    const mat = new Ctor(spec.opts);
+    disposableMaterials.push(mat);
+    addWarmupMesh(mat);
+  }
+
+  // (3) Burn-tint + death-fade clones. updateDeathCollapses and igniteZombie
+  // both clone the shared zombie material on the fly and toggle
+  // transparent/emissive — which forces a fresh shader-program compile on
+  // first ignite/death. Prewarming a clone of each base zombie material with
+  // BOTH flags set covers both code paths in one compile.
+  const burnSources = [
+    zombieSkinMaterial, zombieClothMaterial, zombieBloodMaterial,
+    spitterSkinMat, spitterClothMat,
+    hunterSkinMat, hunterClothMat,
+    chargerSkinMat, chargerClothMat,
+    juggernautSkinMat, juggernautClothMat,
+    boomerSkinMat, boomerClothMat,
+    screamerSkinMat, screamerClothMat,
+  ];
+  for (const base of burnSources) {
+    const clone = base.clone();
+    clone.transparent = true;
+    clone.depthWrite = false;
+    clone.emissive = new THREE.Color(0xff4400);
+    clone.emissiveIntensity = 0.35;
+    disposableMaterials.push(clone);
+    addWarmupMesh(clone);
+  }
+
+  scene.add(warmupGroup);
+
   try {
     if (typeof renderer.compileAsync === "function") {
       await renderer.compileAsync(scene, camera);
     } else if (typeof renderer.compile === "function") {
       renderer.compile(scene, camera);
     }
+    // (4) One explicit render. compileAsync only links shader programs — the
+    // actual GLSL→GPU machine-code compile happens on first USE on some
+    // browsers/drivers (Chrome on Windows is the most common culprit). A
+    // single throwaway render forces every linked program to finish its
+    // final compile inside the prewarm window instead of during gameplay.
+    if (typeof renderer.render === "function") {
+      renderer.render(scene, camera);
+    }
+    _prewarmRan = true;
   } catch (err) {
     console.warn("[DeadTakeover] shader prewarm failed:", err);
   }
+
+  scene.remove(warmupGroup);
+  for (const m of disposableMaterials) m.dispose();
 }
 
 startBtnEl.addEventListener("click", async () => {
@@ -8550,6 +8667,10 @@ startBtnEl.addEventListener("click", async () => {
     window.location.reload();
     return;
   }
+  // Brief feedback during the ~200-800ms shader prewarm freeze. Without this,
+  // players think the Start button is broken because pointer lock hasn't
+  // happened yet. The text is replaced as soon as gameplay logic resumes.
+  if (messageEl) messageEl.textContent = "Compiling shaders…";
   await prewarmShaders();
   canvas.requestPointerLock();
 });
@@ -8599,6 +8720,7 @@ continueBtnEl.addEventListener("click", async () => {
     return;
   }
   loadRun();
+  if (messageEl) messageEl.textContent = "Compiling shaders…";
   await prewarmShaders();
   canvas.requestPointerLock();
 });
