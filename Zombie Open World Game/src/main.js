@@ -302,7 +302,12 @@ sun.position.set(30, 45, -10);
 sun.castShadow = true;
 sun.shadow.bias = -0.0002;
 sun.shadow.normalBias = 0.02;
-sun.shadow.mapSize.set(1024, 1024);
+// Reduced from 1024 — the shadow re-render cost was the dominant frame-
+// time spike when needsUpdate fires (the city has ~150 shadow casters).
+// 512 is 4x cheaper to rasterize and the visual difference is invisible
+// at gameplay distances. applyAdaptiveQuality drops this further to 256
+// when level >= 1.
+sun.shadow.mapSize.set(512, 512);
 sun.shadow.camera.near = 8;
 // Tighter shadow frustum: 130 was rendering shadows ~2x further than fog reach,
 // burning texel density on offscreen geometry. 75 still covers everything the
@@ -332,6 +337,17 @@ const DEBUG_PERF_HUD = (() => {
   }
 })();
 let _perfHudEl = null;
+// Track per-frame max over a rolling 1s window so spike size shows up in
+// the HUD. adaptiveQuality.averageFrameMs is smoothed over 60 samples so
+// it hides spikes — this surfaces them.
+const _frameMsRing = new Array(60).fill(0);
+let _frameMsCursor = 0;
+function recordFrameMs(frameDt) {
+  const ms = frameDt * 1000;
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  _frameMsRing[_frameMsCursor] = ms;
+  _frameMsCursor = (_frameMsCursor + 1) % _frameMsRing.length;
+}
 function updatePerfHudReadout() {
   if (!_perfHudEl) {
     _perfHudEl = document.createElement("div");
@@ -343,13 +359,24 @@ function updatePerfHudReadout() {
   }
   const info = renderer.info.render;
   const memInfo = renderer.info.memory;
+  let maxMs = 0;
+  for (let i = 0; i < _frameMsRing.length; i += 1) {
+    if (_frameMsRing[i] > maxMs) maxMs = _frameMsRing[i];
+  }
   _perfHudEl.textContent =
-    `draws ${info.calls}  tris ${info.triangles.toLocaleString()}  `
-    + `geos ${memInfo.geometries}  texs ${memInfo.textures}  `
-    + `q${adaptiveQuality.level} ${adaptiveQuality.averageFrameMs.toFixed(1)}ms`;
+    `draws ${info.calls}  tris ${info.triangles.toLocaleString()}\n`
+    + `geos ${memInfo.geometries}  texs ${memInfo.textures}\n`
+    + `q${adaptiveQuality.level} avg ${adaptiveQuality.averageFrameMs.toFixed(1)}ms`
+    + `  max ${maxMs.toFixed(1)}ms`;
 }
 
-const SHADOW_SNAP = 4;
+// Bumped from 4 → 16. Each snap triggers a full shadow-map re-render, so
+// firing 4x/sec was the dominant residual frame-time spike (`still
+// stuttering even though framerate holds up`). At 16 units the snap fires
+// roughly once per 1.8s sprint or 4s walk, and the visual difference is
+// still imperceptible because the 512² shadow map's penumbra is wider
+// than 16 world units at typical sun angles.
+const SHADOW_SNAP = 16;
 let shadowSafetyTimer = 0;
 function snapSunToFocus(focusX, focusZ) {
   const sx = Math.round(focusX / SHADOW_SNAP) * SHADOW_SNAP + 30;
@@ -993,7 +1020,7 @@ function applyAdaptiveQuality() {
   // a fast machine but is overkill once the renderer is already throttling
   // pixel ratio at level >=1. 512 cuts shadow-texel work to 1/4 with only a
   // mild softening visible up close.
-  const targetMapSize = adaptiveQuality.level >= 1 ? 512 : 1024;
+  const targetMapSize = adaptiveQuality.level >= 1 ? 256 : 512;
   if (sun.shadow.mapSize.x !== targetMapSize) {
     sun.shadow.mapSize.set(targetMapSize, targetMapSize);
     // Discard the cached depth texture so the new size takes effect on the
@@ -1020,6 +1047,7 @@ function sampleFrameTime(frameDt) {
 
 function updateAdaptiveQuality(frameDt) {
   sampleFrameTime(frameDt);
+  if (DEBUG_PERF_HUD) recordFrameMs(frameDt);
   adaptiveQualityPollTimer -= frameDt;
   adaptiveQualityRecoverTimer -= frameDt;
   if (adaptiveQualityPollTimer > 0) return;
@@ -1306,8 +1334,19 @@ function hasSavedRun() {
   try { return localStorage.getItem("zowg_save") !== null; } catch { return false; }
 }
 
+// Defer expensive synchronous work (localStorage.setItem of the full save
+// blob, JSON.stringify of nested objects) to an idle frame so it never
+// lands on a render frame. requestIdleCallback isn't available in all
+// browsers (Safari < 16.4), so fall back to a 0ms setTimeout — still off
+// the current render frame, just less efficient.
+const _deferIdle = typeof window !== "undefined" && window.requestIdleCallback
+  ? (fn) => window.requestIdleCallback(fn, { timeout: 1000 })
+  : (fn) => setTimeout(fn, 0);
+
 function saveRun() {
   if (gameState !== "PLAYING" || gameOver) return;
+  // Snapshot the values that need to be saved *now* so a player edit one
+  // frame later doesn't get into a torn save.
   const save = {
     wave,
     score,
@@ -1333,7 +1372,11 @@ function saveRun() {
     activeWeapon: player.activeWeapon,
     timestamp: Date.now(),
   };
-  localStorage.setItem("zowg_save", JSON.stringify(save));
+  _deferIdle(() => {
+    try {
+      localStorage.setItem("zowg_save", JSON.stringify(save));
+    } catch (e) { /* quota / privacy mode — silent fail */ }
+  });
   topCenterAlertEl.textContent = "💾 Progress Saved!";
   alertTimer = 1.5;
 }
@@ -8574,7 +8617,12 @@ function animate(nowMs) {
     // under one shadow-render per second when stationary.
     shadowSafetyTimer -= dt;
     if (shadowSafetyTimer <= 0) {
-      shadowSafetyTimer = 1.5;
+      // Bumped from 1.5s → 4s — combined with the 16-unit snap above this
+      // caps shadow-map renders at ~0.25Hz when standing still. Newly-
+      // streamed chunks may sit without shadows for up to 4s, which is
+      // visually fine (the buildings receive ambient + hemi light) and
+      // way better than the per-second stutter rhythm.
+      shadowSafetyTimer = 4;
       renderer.shadowMap.needsUpdate = true;
     }
     autoSaveTick(dt);
