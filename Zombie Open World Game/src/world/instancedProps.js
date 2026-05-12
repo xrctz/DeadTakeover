@@ -262,9 +262,14 @@ function createTemplateBucket(template, scene) {
     const localOffset = new THREE.Matrix4().multiplyMatrices(rootInvMat, obj.matrixWorld);
     const instMesh = new THREE.InstancedMesh(geom, mat, MAX_TEMPLATE_INSTANCES);
     instMesh.count = 0;
-    // City buildings cast and receive shadows. Inherit from the source
-    // mesh's flags so non-shadow templates (rare) are respected.
-    instMesh.castShadow = obj.castShadow !== false;
+    // City buildings are huge multi-mesh GLBs and dominate the shadow-
+    // map rasterization cost when needsUpdate fires. Disabling castShadow
+    // on the bucket eliminates that cost wholesale — visually the
+    // buildings still receive shadows from zombies/vehicles/players, and
+    // their own footprint sits on darker ambient ground anyway because
+    // the sun in this game sits high. This is the single biggest GPU
+    // saving on Outbreak City after the InstancedMesh switch itself.
+    instMesh.castShadow = false;
     instMesh.receiveShadow = obj.receiveShadow !== false;
     // Bucket-wide frustum culling is unsafe — a single visible instance
     // would hide all others. The bucket's effective bbox covers the

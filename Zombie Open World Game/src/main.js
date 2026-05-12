@@ -816,7 +816,17 @@ async function loadCityBuildingLibrary() {
   }
 }
 const chunkSize = 60;
-const chunkRadius = 4;
+// Streaming radius is per-map. outbreak_city is the densest map by far
+// (city buildings + parked-prop clutter + shadow-casting geometry), so
+// pulling the streaming radius from 4 to 3 cuts the active chunk count
+// from 81 to 49 — ~40% less work each frame on the one map that needed
+// it. Other maps keep the wider 4-chunk radius (less per-chunk density,
+// no need to compromise draw distance).
+let chunkRadius = 4;
+function pickChunkRadiusForMap() {
+  chunkRadius = activeMapConfig.id === "outbreak_city" ? 3 : 4;
+}
+pickChunkRadiusForMap();
 const chunkGeometry = new THREE.PlaneGeometry(chunkSize, chunkSize, 24, 24);
 const CHUNK_STREAM_BUDGET = 4;
 const CHUNK_PREWARM_BUDGET = 20;
@@ -2694,8 +2704,13 @@ function placeMapProps(cx, cz) {
   const cellOriginZ = cz * chunkSize;
   const half = chunkSize * 0.5;
 
-  // Vehicles — 2-3 per chunk, parked along streets at random rotations.
-  const vehicleCount = Math.random() < 0.55 ? 1 : 0;
+  // Vehicles — parked clutter. The only non-instanced GLB clone left on
+  // outbreak_city (vehicles have nested wheel/body/light hierarchies that
+  // first-pass InstancedMesh can't reproduce). Each spawn does a deep
+  // template.clone(true) inside spawnModel, so we throttle hard: ~15%
+  // chance per chunk → ~7-8 visible vehicle props across 49 chunks
+  // instead of ~25.
+  const vehicleCount = Math.random() < 0.15 ? 1 : 0;
   for (let i = 0; i < vehicleCount; i += 1) {
     const id = vehicles[Math.floor(Math.random() * vehicles.length)];
     const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 8);
@@ -3343,7 +3358,10 @@ import { createVehicle, updateVehicle, damageVehicle, repairVehicle, refuelVehic
 
 function spawnVehiclesForMap() {
   const countByMap = {
-    outbreak_city: 6,
+    // Halved from 6 — outbreak_city's drivable vehicles are full Vehicle
+    // entities (independent physics, lights, sounds) and 6 of them on
+    // top of the city density was overkill.
+    outbreak_city: 3,
     ruins: 4,
     badlands: 3,
     dead_valley: 2,
@@ -9057,6 +9075,7 @@ startBtnEl.addEventListener("click", async () => {
   await ensureAudioUnlocked();
   if (mapDirty) {
     activeMapConfig = mapById(pendingMapId);
+    pickChunkRadiusForMap();
     mapDirty = false;
   }
   try {
@@ -9108,6 +9127,7 @@ continueBtnEl.addEventListener("click", async () => {
   const targetMapId = savedMapId || pendingMapId;
   if (targetMapId && targetMapId !== activeMapConfig.id) {
     activeMapConfig = mapById(targetMapId);
+    pickChunkRadiusForMap();
     pendingMapId = activeMapConfig.id;
     mapDirty = false;
   }
