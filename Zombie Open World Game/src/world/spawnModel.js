@@ -18,8 +18,10 @@ import { getModelDef } from "./modelRegistry.js";
 
 const _cache = new Map();   // id -> Promise<THREE.Group> (template)
 
-/** Load (and cache) the template for a given model id. */
-function loadTemplate(id) {
+/** Load (and cache) the template for a given model id.
+ *  Exported so other systems (e.g. instancedProps.js) can reuse the same
+ *  GLB cache rather than re-loading the file. */
+export function loadTemplate(id) {
   const def = getModelDef(id);
   if (!def) {
     debugWarn(`spawnModel: unknown model id "${id}" — add it to src/world/modelRegistry.js`);

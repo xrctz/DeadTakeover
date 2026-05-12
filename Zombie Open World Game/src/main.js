@@ -31,6 +31,13 @@ import { WORLD_MAPS, mapById } from "./core/config.js";
 import { createWeather, initWeather as initWeatherSystem, updateWeather as updateWeatherSystem, clearWeather as clearWeatherSystem } from "./world/weather.js";
 import { noise2D as terrainNoise2D, terrainHeight as terrainHeightFn, terrainNormal as terrainNormalFn } from "./world/terrain.js";
 import { spawnModel, preloadModels } from "./world/spawnModel.js";
+import {
+  addPropInstance,
+  releasePropInstance,
+  getInstanceWorldBox,
+  preloadInstancedProps,
+  resetInstancedPropsForNewWorld,
+} from "./world/instancedProps.js";
 import { modelsByCategory, getModelDef } from "./world/modelRegistry.js";
 import { buildZombieMesh, statsForType as zombieStatsForType, rollZombieType, SPECIAL_INFECTED_TYPES } from "./entities/zombie.js";
 import { emitSoundEvent, pruneSoundEvents, flankOffset, NOISE_RADIUS } from "./entities/zombieAI.js";
@@ -273,6 +280,16 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, BASE_PIXEL_RATIO_CAP));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// The sun position follows the player every frame (open-world trick to keep
+// shadows around them). With autoUpdate=true that re-rasterizes the full
+// shadow map every frame — the single largest GPU cost in dense scenes like
+// outbreak_city. Switching to manual updates and snapping the sun to a
+// coarse grid (see animate loop) drops shadow-map renders from 60/sec to
+// roughly 2/sec at sprint speed, with no visible quality change because the
+// PCFSoft penumbra is wider than the 4-unit snap.
+renderer.shadowMap.autoUpdate = false;
+// Initial shadow render — covers the menu/idle scene before Start.
+renderer.shadowMap.needsUpdate = true;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.07;
@@ -296,6 +313,53 @@ sun.shadow.camera.right = 32;
 sun.shadow.camera.top = 32;
 sun.shadow.camera.bottom = -32;
 scene.add(sun);
+
+// Snap the sun.position to a coarse grid as the player walks. The shadow
+// camera follows the player so shadows stay visible, but at 60Hz the
+// per-frame movement is sub-pixel anyway — rounding the focus position to
+// the nearest 4-unit cell makes shadow refreshes fire only when the player
+// has actually moved enough that a new frame would look different. At
+// sprint speed (~9 m/s) that's about 2 refreshes per second instead of 60.
+// Enable the in-game perf readout with `?debug=1` in the URL. Production
+// users never see it; we use it to verify the InstancedMesh + matrix opt-
+// out wins are landing (drawCalls and triangles should drop visibly).
+const DEBUG_PERF_HUD = (() => {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("debug") === "1";
+  } catch (e) {
+    return false;
+  }
+})();
+let _perfHudEl = null;
+function updatePerfHudReadout() {
+  if (!_perfHudEl) {
+    _perfHudEl = document.createElement("div");
+    _perfHudEl.style.cssText = "position:fixed;bottom:8px;left:8px;z-index:9999;"
+      + "font:11px/1.3 ui-monospace,Consolas,monospace;color:#9aff9a;"
+      + "background:rgba(0,0,0,0.55);padding:4px 8px;border-radius:4px;"
+      + "pointer-events:none;white-space:pre;";
+    document.body.appendChild(_perfHudEl);
+  }
+  const info = renderer.info.render;
+  const memInfo = renderer.info.memory;
+  _perfHudEl.textContent =
+    `draws ${info.calls}  tris ${info.triangles.toLocaleString()}  `
+    + `geos ${memInfo.geometries}  texs ${memInfo.textures}  `
+    + `q${adaptiveQuality.level} ${adaptiveQuality.averageFrameMs.toFixed(1)}ms`;
+}
+
+const SHADOW_SNAP = 4;
+let shadowSafetyTimer = 0;
+function snapSunToFocus(focusX, focusZ) {
+  const sx = Math.round(focusX / SHADOW_SNAP) * SHADOW_SNAP + 30;
+  const sz = Math.round(focusZ / SHADOW_SNAP) * SHADOW_SNAP - 10;
+  if (sun.position.x !== sx || sun.position.z !== sz) {
+    sun.position.x = sx;
+    sun.position.z = sz;
+    renderer.shadowMap.needsUpdate = true;
+  }
+}
 
 const textureLoader = new THREE.TextureLoader();
 const barkDiffuse = textureLoader.load(treeBarkDiffuseUrl);
@@ -921,6 +985,25 @@ function applyAdaptiveQuality() {
     adaptiveQuality.shadowsEnabled = enableShadows;
     renderer.shadowMap.enabled = enableShadows;
     sun.castShadow = enableShadows;
+    // The shadow-map autoUpdate=false path means re-enabling shadows after a
+    // dip needs a single explicit refresh to repaint stale shadow texels.
+    if (enableShadows) renderer.shadowMap.needsUpdate = true;
+  }
+  // Tier shadow-map resolution off the adaptive level. 1024 looks great on
+  // a fast machine but is overkill once the renderer is already throttling
+  // pixel ratio at level >=1. 512 cuts shadow-texel work to 1/4 with only a
+  // mild softening visible up close.
+  const targetMapSize = adaptiveQuality.level >= 1 ? 512 : 1024;
+  if (sun.shadow.mapSize.x !== targetMapSize) {
+    sun.shadow.mapSize.set(targetMapSize, targetMapSize);
+    // Discard the cached depth texture so the new size takes effect on the
+    // next shadow render. Without this, three.js keeps using the old map
+    // and the resize is silently ignored.
+    if (sun.shadow.map) {
+      sun.shadow.map.dispose();
+      sun.shadow.map = null;
+    }
+    renderer.shadowMap.needsUpdate = true;
   }
 }
 
@@ -2362,6 +2445,14 @@ function makeTree(x, z) {
 
   group.add(trunk);
   group.add(crown);
+  // Trees never move after spawn. Bake every local matrix once and stop the
+  // per-frame Object3D.updateMatrixWorld traversal entirely for this branch.
+  group.updateMatrix();
+  trunk.updateMatrix();
+  crown.updateMatrix();
+  group.matrixAutoUpdate = false;
+  trunk.matrixAutoUpdate = false;
+  crown.matrixAutoUpdate = false;
   visionBlockers.push(trunk);
   return { x, z, radius: 1.3, group };
 }
@@ -2407,6 +2498,14 @@ function makeStructure(x, z) {
 
   group.add(base, roof);
   scene.add(group);
+  // Structures are stamped once per chunk and never animated. Skip the
+  // per-frame matrix recompute for both the parent and the children.
+  group.updateMatrix();
+  base.updateMatrix();
+  roof.updateMatrix();
+  group.matrixAutoUpdate = false;
+  base.matrixAutoUpdate = false;
+  roof.matrixAutoUpdate = false;
   visionBlockers.push(base, roof);
   structureGroups.push(group);
   group.userData.visionChildren = [base, roof];
@@ -2445,6 +2544,10 @@ function makeChunk(cx, cz) {
   positions.needsUpdate = true;
   normals.needsUpdate = true;
   scene.add(mesh);
+  // Terrain chunks are pinned to their world position forever. Switching
+  // off matrixAutoUpdate skips ~80 Matrix4 multiplies/frame in steady state.
+  mesh.updateMatrix();
+  mesh.matrixAutoUpdate = false;
   const chunkRecord = { cx, cz, mesh, key: chunkKey };
   groundChunks.push(chunkRecord);
   groundChunkMap.set(chunkKey, chunkRecord);
@@ -2496,6 +2599,18 @@ function makeChunk(cx, cz) {
       holder.position.set(tx, 0, tz);
       holder.rotation.y = Math.random() * Math.PI * 2;
       scene.add(holder);
+      // City buildings never move. Bake every node's local matrix once and
+      // skip the recursive updateMatrixWorld traversal forever — `inst` is
+      // a deep GLB clone and its internal hierarchy is the most expensive
+      // part of the cost. Note: we must call updateMatrix() on each node
+      // BEFORE disabling matrixAutoUpdate, otherwise child meshes that
+      // depend on their local TRS would render at identity.
+      holder.updateMatrixWorld(true);
+      holder.matrixAutoUpdate = false;
+      inst.traverse((obj) => {
+        obj.updateMatrix();
+        obj.matrixAutoUpdate = false;
+      });
       cityPropGroups.push(holder);
       visionBlockers.push(holder);
       registerStaticCollider(holder, 0.2, "cityBuilding");
@@ -2589,24 +2704,73 @@ function placeMapProps(cx, cz) {
 
 /** Spawn a single GLB prop at world (x, z) using the registry. The prop is
  *  added to cityPropGroups so it gets cleaned up when the chunk unloads, and
- *  registered as a static collider if the registry entry has a collider. */
+ *  registered as a static collider if the registry entry has a collider.
+ *
+ *  Simple props (decor, prop, barricade, debris categories) route through
+ *  the InstancedMesh bucket pipeline — N instances of the same model share
+ *  one draw call. Vehicles still go through the regular spawnModel path:
+ *  vehicleCount is at most 1 per chunk and their nested hierarchies make
+ *  first-pass instancing awkward (future scope). */
 function spawnPropAt(id, x, z, yaw, registerCollider = true) {
   const y = terrainHeight(x, z);
+  const def = getModelDef(id);
+  const useInstancing = def && def.category !== "vehicle";
+
+  if (useInstancing) {
+    addPropInstance(id, scene, { x, y, z, yaw }).then((handle) => {
+      if (!handle) return;
+      // The proxy is a minimal Object3D placed at the spawn position. It
+      // exists only so the existing cityPropGroups/visionBlockers/static-
+      // collider unload machinery can find this instance later — the
+      // actual rendering is the bucket's InstancedMesh. The proxy is NOT
+      // added to the scene (it has no geometry to draw).
+      const proxy = new THREE.Object3D();
+      proxy.position.set(x, y, z);
+      proxy.userData.instancedHandle = handle;
+      proxy.userData.modelId = id;
+      cityPropGroups.push(proxy);
+
+      // First spawn of this bucket → register its InstancedMeshes as
+      // global vision blockers exactly once. Subsequent spawns reuse the
+      // same blocker (raycasts against an InstancedMesh hit any populated
+      // instance). Decor (cones, lamps) typically lacks a collider so we
+      // also skip vision blocking for those.
+      if (handle.firstSpawn && def && def.collider) {
+        for (const m of handle.bucket.meshes) visionBlockers.push(m.instMesh);
+      }
+      if (registerCollider && def && def.collider) {
+        registerStaticColliderFromBox(
+          proxy,
+          getInstanceWorldBox(handle, _tmpWorldBox),
+          def.collider.radius || 0.5,
+          id,
+        );
+      }
+    }).catch(() => { /* swallow — file may be missing while user is iterating */ });
+    return;
+  }
+
   spawnModel(id, scene, { x, y, z, yaw }).then((group) => {
     if (!group) return;
-    // City clutter shadows are expensive and add little gameplay value.
+    // Walk the hierarchy once: capture each node's local matrix at its
+    // spawn pose and then freeze it. After this, three.js will not rebuild
+    // matrices for these props ever again.
+    group.updateMatrixWorld(true);
     group.traverse((obj) => {
       if (obj instanceof THREE.Mesh) obj.castShadow = false;
+      obj.updateMatrix();
+      obj.matrixAutoUpdate = false;
     });
     cityPropGroups.push(group);
-    // Block sight + bullets on solid props (vehicles, barrels, fences).
-    const def = getModelDef(id);
     if (registerCollider && def && def.collider) {
       visionBlockers.push(group);
       registerStaticCollider(group, def.collider.radius || 0.5, id);
     }
   }).catch(() => { /* swallow — file may be missing while user is iterating */ });
 }
+
+// Reusable scratch box for instanced-prop bbox lookups (avoids per-spawn alloc).
+const _tmpWorldBox = new THREE.Box3();
 
 function ensureChunks(maxCreates = CHUNK_STREAM_BUDGET) {
   const pcx = Math.floor(player.position.x / chunkSize);
@@ -2685,12 +2849,22 @@ function ensureChunks(maxCreates = CHUNK_STREAM_BUDGET) {
     const cx = Math.floor(g.position.x / chunkSize);
     const cz = Math.floor(g.position.z / chunkSize);
     if (Math.abs(cx - pcx) > chunkRadius + 1 || Math.abs(cz - pcz) > chunkRadius + 1) {
-      scene.remove(g);
-      disposeObject3D(g);
-      for (let j = visionBlockers.length - 1; j >= 0; j--) {
-        if (visionBlockers[j] === g) visionBlockers.splice(j, 1);
+      // Instanced props: release the slot in the InstancedMesh bucket and
+      // drop the static-collider entry. The InstancedMesh itself stays
+      // scene-resident (it lives forever, hosting future spawns of the
+      // same model id) so we do NOT remove it from visionBlockers.
+      const handle = g.userData && g.userData.instancedHandle;
+      if (handle) {
+        releasePropInstance(handle);
+        removeStaticCollider(g);
+      } else {
+        scene.remove(g);
+        disposeObject3D(g);
+        for (let j = visionBlockers.length - 1; j >= 0; j--) {
+          if (visionBlockers[j] === g) visionBlockers.splice(j, 1);
+        }
+        removeStaticCollider(g);
       }
-      removeStaticCollider(g);
       cityPropGroups.splice(i, 1);
     }
   }
@@ -2795,11 +2969,22 @@ function resetWorldForNewMap() {
   }
   structureGroups.length = 0;
   for (const g of cityPropGroups) {
-    scene.remove(g);
-    disposeObject3D(g);
+    const handle = g.userData && g.userData.instancedHandle;
+    if (handle) {
+      releasePropInstance(handle);
+    } else {
+      scene.remove(g);
+      disposeObject3D(g);
+    }
   }
   cityPropGroups.length = 0;
   visionBlockers.length = 0;
+  // Instanced-prop buckets persist in the scene across map switches (they
+  // hold shared GLB geometry/materials). But visionBlockers above just got
+  // wiped, so we have to let the buckets re-push their InstancedMeshes on
+  // first spawn in the new world. resetInstancedPropsForNewWorld also
+  // clears any leftover slots from the previous map.
+  resetInstancedPropsForNewWorld();
 
   for (const z of zombies) {
     scene.remove(z.mesh);
@@ -5524,6 +5709,25 @@ function registerStaticCollider(obj, pad = 0, kind = "static") {
   return entry;
 }
 
+/** Register a static collider when the world-space bbox is already known —
+ *  e.g. for instanced-prop spawns, where the proxy Object3D has no geometry
+ *  so setFromObject(proxy) would return an empty box. */
+function registerStaticColliderFromBox(obj, box, pad = 0, kind = "static") {
+  if (!box || !isFinite(box.min.x) || !isFinite(box.max.x)) return;
+  const entry = {
+    minX: box.min.x - pad,
+    maxX: box.max.x + pad,
+    minZ: box.min.z - pad,
+    maxZ: box.max.z + pad,
+    kind,
+    ref: obj,
+  };
+  staticColliders.push(entry);
+  addColliderToGrid(entry);
+  obj.userData.colliderEntry = entry;
+  return entry;
+}
+
 function removeStaticCollider(obj) {
   const entry = obj?.userData?.colliderEntry;
   if (!entry) return;
@@ -5769,6 +5973,11 @@ function updateHud(dt) {
     const mm = `${Math.floor(elapsed / 60)}`.padStart(2, "0");
     const ss = `${elapsed % 60}`.padStart(2, "0");
     worldStatsEl.textContent = `Wave ${wave} | ${mm}:${ss}`;
+    // ?debug=1 → live readout of three.js renderer.info so we can verify
+    // draw-call savings without DevTools. The element is lazy-attached on
+    // first hit and otherwise costs zero (DEBUG_PERF_HUD is computed once
+    // at module load).
+    if (DEBUG_PERF_HUD) updatePerfHudReadout();
     hudStatsRefreshTimer = 0.12;
   }
   // Low ammo warning: flash when mag is nearly empty
@@ -8299,16 +8508,13 @@ function animate(nowMs) {
         const targetPos = _tempVec2.copy(activeVehicle.mesh.position).add(_tempVec3.set(0, 1, 0));
         camera.position.lerp(_tempVec4.copy(activeVehicle.mesh.position).add(camOffset), 0.15);
         camera.lookAt(targetPos);
-        sun.position.x = activeVehicle.mesh.position.x + 30;
-        sun.position.z = activeVehicle.mesh.position.z - 10;
+        snapSunToFocus(activeVehicle.mesh.position.x, activeVehicle.mesh.position.z);
       } else {
-        sun.position.x = player.position.x + 30;
-        sun.position.z = player.position.z - 10;
+        snapSunToFocus(player.position.x, player.position.z);
       }
     } else {
       movePlayer(dt);
-      sun.position.x = player.position.x + 30;
-      sun.position.z = player.position.z - 10;
+      snapSunToFocus(player.position.x, player.position.z);
       preventTreeCollision();
       resolvePlayerObstacles();
       clampPlayerToTerrainFloor();
@@ -8361,6 +8567,16 @@ function animate(nowMs) {
     updatePeriodicEvents(dt);
     updateWeather(dt);
     updateDayNight();
+    // Safety-refresh the shadow map periodically when the player is standing
+    // still — covers new chunks/props streaming in while sun-snap hasn't
+    // fired. 1.5s is fast enough that a freshly-loaded building's shadow
+    // appears before the player notices and slow enough that it's well
+    // under one shadow-render per second when stationary.
+    shadowSafetyTimer -= dt;
+    if (shadowSafetyTimer <= 0) {
+      shadowSafetyTimer = 1.5;
+      renderer.shadowMap.needsUpdate = true;
+    }
     autoSaveTick(dt);
     if (meleeCooldown > 0) meleeCooldown -= dt;
     if (hordeNightActive) {
