@@ -154,20 +154,7 @@ export function buildZombieMesh({ type, x, y, z, assets }) {
   else if (type === "screamer") group.scale.set(0.92, 1.02, 0.92);
 
   group.traverse((obj) => {
-    if (obj instanceof THREE.Mesh) {
-      obj.castShadow = false;
-      // Static body parts (hips, torso, head, jaw, eyes) don't move relative
-      // to the parent Group — their local transform is set once at creation and
-      // never changes (only the animated arms/legs get per-frame rotation).
-      // Locking matrixAutoUpdate skips ~7 unnecessary Matrix4 recomputations
-      // per zombie per frame — with 50 zombies that's 350 matrix saves/frame.
-      // Arms and legs are still animated via rotation changes; their matrices
-      // need to stay dynamic, so they're excluded.
-      if (obj !== leftArm && obj !== rightArm && obj !== leftLeg && obj !== rightLeg) {
-        obj.updateMatrix();
-        obj.matrixAutoUpdate = false;
-      }
-    }
+    if (obj instanceof THREE.Mesh) obj.castShadow = false;
   });
 
   return { group, leftArm, rightArm, leftLeg, rightLeg };
