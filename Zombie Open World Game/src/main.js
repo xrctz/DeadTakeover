@@ -840,7 +840,7 @@ const CHUNK_PREWARM_BUDGET = 20;
 // the entire prewarm budget in a single ~200ms freeze on Start (acceptable)
 // at the cost of zero chunk-build hitches in the first few seconds of play.
 const CHUNK_PREWARM_SYNC_DRAIN = 18;
-const CHUNK_STREAM_BOOST_SECONDS = 8;
+const CHUNK_STREAM_BOOST_SECONDS = 4;
 // Was 1 — one chunk built per frame as the player moves means a tiny hitch
 // every time the streaming radius advances. 2 covers normal-speed movement
 // without the player ever waiting on a chunk to materialize.
@@ -849,7 +849,7 @@ const CHUNK_BUILD_DRAIN_BASE = 1;
 // Outbreak City has 49 active chunks. Building 2 per frame costs ~15-20ms
 // each (terrain vertex loop + InstancedMesh building placement + prop
 // scheduling). Dropping to 1 per frame means the fill takes ~24 extra
-// frames but eliminates the streaming hitch entirely. During the 8s boost
+// frames but eliminates the streaming hitch entirely. During the 4s boost
 // window after teleport/respawn, drain stays at 2 for faster recovery.
 const CHUNK_BUILD_DRAIN_BOOST = 2;
 const MAX_VALID_WORLD_ABS = chunkSize * (chunkRadius + 1) * 8;
@@ -2512,7 +2512,8 @@ function preventUnexpectedSpawnTeleport() {
     lastStreamChunkZ = Number.NaN;
     chunkStreamingBoostUntil = gameTime + CHUNK_STREAM_BOOST_SECONDS;
     ensureChunks();
-    drainChunkBuildQueue(CHUNK_PREWARM_SYNC_DRAIN);
+    // Don't drain synchronously — let the per-frame drain handle it
+    // to avoid a massive stall after teleport.
     camera.position.set(player.position.x, player.position.y, player.position.z);
     messageEl.textContent = "Blocked a bad spawn teleport.";
   }
