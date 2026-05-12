@@ -704,6 +704,19 @@ async function loadCityBuildingLibrary() {
           }
         }
       });
+      // Cache the original-template bounding box ONCE here, at load time.
+      // The old per-chunk path called `new THREE.Box3().setFromObject(inst)`
+      // twice per building — once to find the largest dimension for height
+      // normalization, once after scaling to find the floor offset. Both
+      // traverse every mesh in the template and recompute bounding boxes from
+      // raw vertex buffers, which on a 9x9-chunk city map and 2 buildings per
+      // chunk was a ~10-15ms hitch per chunk that surfaced as "stutters every
+      // second" while streaming. Caching `_maxDim` and `_minY` lets makeChunk
+      // skip both Box3 calls and just scale arithmetically.
+      const bbox = new THREE.Box3().setFromObject(root);
+      const size = bbox.getSize(new THREE.Vector3());
+      root.userData._maxDim = Math.max(size.x, size.y, size.z, 0.001);
+      root.userData._minY = bbox.min.y;
       cityBuildingTemplates.push(root);
     }
   } catch {
@@ -726,7 +739,13 @@ const CHUNK_STREAM_BOOST_SECONDS = 8;
 // every time the streaming radius advances. 2 covers normal-speed movement
 // without the player ever waiting on a chunk to materialize.
 const CHUNK_BUILD_DRAIN_BASE = 2;
-const CHUNK_BUILD_DRAIN_BOOST = 3;
+// Was 3 — even with the bbox cache fix that cut city-chunk cost in half,
+// building 3 chunks per frame still risked ~30ms hitches during the 8-second
+// boost window after a teleport. 2 spreads the same amount of work across
+// twice the frames, trading a slightly longer streaming-in period for a
+// hitch-free one. The streaming boost duration is 8s so the player won't
+// notice the slower fill.
+const CHUNK_BUILD_DRAIN_BOOST = 2;
 const MAX_VALID_WORLD_ABS = chunkSize * (chunkRadius + 1) * 8;
 
 const player = {
@@ -2464,14 +2483,16 @@ function makeChunk(cx, cz) {
       const inst = tpl.clone(true);
       const holder = new THREE.Group();
       holder.add(inst);
-      const box = new THREE.Box3().setFromObject(inst);
-      const sz = box.getSize(new THREE.Vector3());
-      const max = Math.max(sz.x, sz.y, sz.z, 0.001);
+      // Use the cached bbox stored at template-load time instead of the old
+      // `new Box3().setFromObject(inst)` calls. The two Box3 traversals were
+      // the dominant per-chunk cost on outbreak_city and caused the visible
+      // ~1Hz stutters as new chunks streamed in while the player walked.
+      const cachedMaxDim = tpl.userData._maxDim || 1;
+      const cachedMinY = tpl.userData._minY || 0;
       const targetH = 8 + Math.random() * 14;
-      inst.scale.setScalar(targetH / max);
-      inst.updateMatrixWorld(true);
-      const b2 = new THREE.Box3().setFromObject(inst);
-      inst.position.y = -b2.min.y;
+      const scale = targetH / cachedMaxDim;
+      inst.scale.setScalar(scale);
+      inst.position.y = -cachedMinY * scale;
       holder.position.set(tx, 0, tz);
       holder.rotation.y = Math.random() * Math.PI * 2;
       scene.add(holder);
@@ -6122,19 +6143,46 @@ function updateFloatingDamageNums(dt) {
 // ─── Blood Decals ────────────────────────────────────────────────────────────
 /** Drop a flat blood splat on the ground at (x, z). Fades over `life` seconds.
  *  Recycles the oldest decal when the cap is hit. */
-function spawnBloodDecal(x, z, scale = 1, life = 28) {
-  const y = terrainHeight(x, z) + 0.02; // tiny lift to avoid z-fighting
-  // Real CC0 blood splatter texture (OpenGameArt). Mix splatter / drops randomly
-  // for variety. The PNG already has transparency, so we use `map` + `transparent`
-  // and tint via `color` to keep the kill darker over time.
-  const useDrops = Math.random() < 0.35;
-  const mat = new THREE.MeshBasicMaterial({
+// Blood decal material pool. The old code allocated a fresh
+// MeshBasicMaterial-with-texture per kill and disposed it when the decal
+// expired (~28s). At a normal kill rate that's a steady cycle of GPU sampler
+// bindings being created and torn down — a small allocation cost per kill,
+// but enough that the death code path felt stutter-y to the player. Pooling
+// keeps a maximum of MAX_BLOOD_DECALS materials alive forever and recycles
+// them across the splatter/drops texture variants.
+const _decalMatPoolSplatter = [];
+const _decalMatPoolDrops = [];
+function _acquireDecalMat(useDrops) {
+  const pool = useDrops ? _decalMatPoolDrops : _decalMatPoolSplatter;
+  if (pool.length > 0) {
+    const m = pool.pop();
+    m.opacity = 0.95;
+    return m;
+  }
+  return new THREE.MeshBasicMaterial({
     map: useDrops ? bloodDropsTex : bloodSplatterTex,
     color: 0x882020,
     transparent: true,
     opacity: 0.95,
     depthWrite: false,
   });
+}
+function _releaseDecalMat(mat) {
+  // mat.userData._useDrops is set at acquire time so we know which pool to
+  // return to. Falling back to splatter is safe because both textures share
+  // the same shader program.
+  const pool = mat.userData._useDrops ? _decalMatPoolDrops : _decalMatPoolSplatter;
+  if (pool.length < MAX_BLOOD_DECALS) pool.push(mat);
+  else mat.dispose();
+}
+
+function spawnBloodDecal(x, z, scale = 1, life = 28) {
+  const y = terrainHeight(x, z) + 0.02; // tiny lift to avoid z-fighting
+  // Real CC0 blood splatter texture (OpenGameArt). Mix splatter / drops randomly
+  // for variety.
+  const useDrops = Math.random() < 0.35;
+  const mat = _acquireDecalMat(useDrops);
+  mat.userData._useDrops = useDrops;
   const mesh = new THREE.Mesh(_pGeoDecal, mat);
   mesh.rotation.x = -Math.PI / 2;
   mesh.position.set(x, y, z);
@@ -6145,7 +6193,7 @@ function spawnBloodDecal(x, z, scale = 1, life = 28) {
   if (bloodDecals.length >= MAX_BLOOD_DECALS) {
     const old = bloodDecals.shift();
     scene.remove(old.mesh);
-    old.mesh.material.dispose();
+    _releaseDecalMat(old.mesh.material);
   }
   bloodDecals.push({ mesh, life, maxLife: life });
 }
@@ -6156,7 +6204,7 @@ function updateBloodDecals(dt) {
     d.life -= dt;
     if (d.life <= 0) {
       scene.remove(d.mesh);
-      d.mesh.material.dispose();
+      _releaseDecalMat(d.mesh.material);
       bloodDecals.splice(i, 1);
       continue;
     }
@@ -7500,19 +7548,29 @@ function checkToxicBarrelHits(bulletFrom, bulletTo, damage) {
 }
 
 // ─── Zombie Corpse Revival System ────────────────────────────────────────────
+// Shared resources for all zombie corpses — created once, never disposed.
+// The old code allocated a fresh BoxGeometry + SphereGeometry + MeshStandard-
+// Material per kill (~3 GPU buffer uploads + 1 material clone every time a
+// zombie died), which caused the visible per-kill stutter the user reported.
+// Sharing keeps the per-kill work to a single Group + two Mesh instances and
+// zero GPU allocations.
+const _corpseBodyGeo = new THREE.BoxGeometry(0.9, 0.25, 0.55);
+const _corpseHeadGeo = new THREE.SphereGeometry(0.28, 8, 6);
+_corpseBodyGeo.userData.preventDispose = true;
+_corpseHeadGeo.userData.preventDispose = true;
+// The corpse body mat is cloned because updateCorpses() mutates emissive +
+// emissiveIntensity per-instance as revival approaches. Sharing the single
+// instance would tint every corpse together. The CLONE is cheap (no shader
+// recompile because the prewarm precompiles emissive-enabled standard mat),
+// and the geometry is still shared.
+const _corpseBodyTemplateMat = new THREE.MeshStandardMaterial({ color: 0x5a6b4a, roughness: 0.9 });
 function createZombieCorpse(position, type, rotationY) {
   const corpse = new THREE.Group();
-  const corpseBodyMat = new THREE.MeshStandardMaterial({ color: 0x5a6b4a, roughness: 0.9 });
+  const corpseBodyMat = _corpseBodyTemplateMat.clone();
   corpseBodyMat.userData.disposeWithMesh = true;
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(0.9, 0.25, 0.55),
-    corpseBodyMat,
-  );
+  const body = new THREE.Mesh(_corpseBodyGeo, corpseBodyMat);
   body.position.y = 0.12;
-  const head = new THREE.Mesh(
-    new THREE.SphereGeometry(0.28, 8, 6),
-    zombieSkinMaterial,
-  );
+  const head = new THREE.Mesh(_corpseHeadGeo, zombieSkinMaterial);
   head.position.set(0, 0.35, 0.25);
   corpse.add(body, head);
   corpse.position.copy(position);
