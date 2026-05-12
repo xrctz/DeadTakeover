@@ -39,6 +39,10 @@ const _zeroScaleMat = new THREE.Matrix4().makeScale(0, 0, 0);
 const _tmpMatrix = new THREE.Matrix4();
 const _tmpMatrixB = new THREE.Matrix4();
 const _tmpVec3 = new THREE.Vector3();
+const _tmpPos = new THREE.Vector3();
+const _tmpQuat = new THREE.Quaternion();
+const _tmpScale = new THREE.Vector3();
+const _axisY = new THREE.Vector3(0, 1, 0);
 
 /** Build the InstancedMesh buckets for a model id and add them to the scene. */
 async function prepareBucket(modelId, scene) {
@@ -219,6 +223,126 @@ export function resetInstancedPropsForNewWorld() {
       m.instMesh.count = 0;
     }
   }
+  for (const bucket of _templateBuckets.values()) {
+    bucket.firstSpawnDelivered = false;
+    bucket.freeSlots.length = 0;
+    bucket.nextSlot = 0;
+    bucket.highWater = 0;
+    for (const m of bucket.meshes) {
+      m.instMesh.count = 0;
+    }
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+//   Template-based instancing — same machinery as addPropInstance but the
+//   caller passes an already-loaded THREE.Object3D template directly. Used
+//   for the city building library (cityBuildingTemplates) since those are
+//   loaded by a custom path (loadCityBuildingLibrary) instead of through
+//   the model registry. Buildings also have a per-instance uniform scale
+//   that the prop pipeline doesn't need.
+// ────────────────────────────────────────────────────────────────────────
+
+const MAX_TEMPLATE_INSTANCES = 64;
+
+// template root Object3D -> bucket. WeakMap so a discarded template's
+// bucket can be GC'd; in practice templates live forever once loaded.
+const _templateBuckets = new Map();
+
+function createTemplateBucket(template, scene) {
+  template.updateMatrixWorld(true);
+  const rootInvMat = new THREE.Matrix4().copy(template.matrixWorld).invert();
+  let templateBox = null;
+  const meshes = [];
+  template.traverse((obj) => {
+    if (!obj.isMesh) return;
+    const mat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+    const geom = obj.geometry;
+    if (!geom || !mat) return;
+    const localOffset = new THREE.Matrix4().multiplyMatrices(rootInvMat, obj.matrixWorld);
+    const instMesh = new THREE.InstancedMesh(geom, mat, MAX_TEMPLATE_INSTANCES);
+    instMesh.count = 0;
+    // City buildings cast and receive shadows. Inherit from the source
+    // mesh's flags so non-shadow templates (rare) are respected.
+    instMesh.castShadow = obj.castShadow !== false;
+    instMesh.receiveShadow = obj.receiveShadow !== false;
+    // Bucket-wide frustum culling is unsafe — a single visible instance
+    // would hide all others. The bucket's effective bbox covers the
+    // entire world anyway once a few chunks have spawned buildings.
+    instMesh.frustumCulled = false;
+    instMesh.userData.isInstancedTemplateBucket = true;
+    scene.add(instMesh);
+
+    if (!geom.boundingBox) geom.computeBoundingBox();
+    const meshBox = geom.boundingBox.clone().applyMatrix4(localOffset);
+    if (!templateBox) templateBox = meshBox;
+    else templateBox.union(meshBox);
+
+    meshes.push({ instMesh, localOffsetMatrix: localOffset });
+  });
+  if (meshes.length === 0) return null;
+  if (!templateBox) templateBox = new THREE.Box3(new THREE.Vector3(), new THREE.Vector3());
+
+  return {
+    template,
+    meshes,
+    freeSlots: [],
+    nextSlot: 0,
+    highWater: 0,
+    templateBox,
+    firstSpawnDelivered: false,
+  };
+}
+
+/** Synchronous spawn of a single instance of an already-loaded template
+ *  at (x, y, z) with `yaw` radians around Y and `scale` uniform scale.
+ *  Replaces `template.clone(true)` for hot-path spawn sites — the
+ *  per-chunk city-building loop previously did a full deep clone of each
+ *  building's GLB hierarchy (multi-ms per call) and that was the
+ *  remaining "stutter only on Outbreak City" source. */
+export function addTemplateInstance(template, scene, { x = 0, y = 0, z = 0, yaw = 0, scale = 1 } = {}) {
+  if (!template) return null;
+  let bucket = _templateBuckets.get(template);
+  if (!bucket) {
+    bucket = createTemplateBucket(template, scene);
+    if (!bucket) return null;
+    _templateBuckets.set(template, bucket);
+  }
+
+  let slot;
+  if (bucket.freeSlots.length > 0) {
+    slot = bucket.freeSlots.pop();
+  } else if (bucket.nextSlot < MAX_TEMPLATE_INSTANCES) {
+    slot = bucket.nextSlot++;
+  } else {
+    return null;
+  }
+
+  // compose(position, quaternion, scale) — buildings vary scale per
+  // instance (random height target), so we can't bake scale into the
+  // local offsets at bucket-creation time.
+  _tmpPos.set(x, y, z);
+  _tmpQuat.setFromAxisAngle(_axisY, yaw);
+  _tmpScale.setScalar(scale);
+  _tmpMatrix.compose(_tmpPos, _tmpQuat, _tmpScale);
+
+  for (const m of bucket.meshes) {
+    _tmpMatrixB.multiplyMatrices(_tmpMatrix, m.localOffsetMatrix);
+    m.instMesh.setMatrixAt(slot, _tmpMatrixB);
+    m.instMesh.instanceMatrix.needsUpdate = true;
+    if (slot >= m.instMesh.count) m.instMesh.count = slot + 1;
+  }
+  if (slot >= bucket.highWater) bucket.highWater = slot + 1;
+
+  const firstSpawn = !bucket.firstSpawnDelivered;
+  bucket.firstSpawnDelivered = true;
+
+  return {
+    bucket,
+    slot,
+    spawnMatrix: _tmpMatrix.clone(),
+    firstSpawn,
+  };
 }
 
 /** Preload buckets for a list of model ids so the first spawn doesn't

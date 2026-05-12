@@ -37,6 +37,7 @@ import {
   getInstanceWorldBox,
   preloadInstancedProps,
   resetInstancedPropsForNewWorld,
+  addTemplateInstance,
 } from "./world/instancedProps.js";
 import { modelsByCategory, getModelDef } from "./world/modelRegistry.js";
 import { buildZombieMesh, statsForType as zombieStatsForType, rollZombieType, SPECIAL_INFECTED_TYPES } from "./entities/zombie.js";
@@ -2626,37 +2627,44 @@ function makeChunk(cx, cz) {
       const tz = cz * chunkSize + (Math.random() - 0.5) * (chunkSize - 14);
       if (Math.hypot(tx, tz) < 18) continue;
       const tpl = cityBuildingTemplates[Math.floor(Math.random() * cityBuildingTemplates.length)];
-      const inst = tpl.clone(true);
-      const holder = new THREE.Group();
-      holder.add(inst);
-      // Use the cached bbox stored at template-load time instead of the old
-      // `new Box3().setFromObject(inst)` calls. The two Box3 traversals were
-      // the dominant per-chunk cost on outbreak_city and caused the visible
-      // ~1Hz stutters as new chunks streamed in while the player walked.
       const cachedMaxDim = tpl.userData._maxDim || 1;
       const cachedMinY = tpl.userData._minY || 0;
       const targetH = 8 + Math.random() * 14;
       const scale = targetH / cachedMaxDim;
-      inst.scale.setScalar(scale);
-      inst.position.y = -cachedMinY * scale;
-      holder.position.set(tx, 0, tz);
-      holder.rotation.y = Math.random() * Math.PI * 2;
-      scene.add(holder);
-      // City buildings never move. Bake every node's local matrix once and
-      // skip the recursive updateMatrixWorld traversal forever — `inst` is
-      // a deep GLB clone and its internal hierarchy is the most expensive
-      // part of the cost. Note: we must call updateMatrix() on each node
-      // BEFORE disabling matrixAutoUpdate, otherwise child meshes that
-      // depend on their local TRS would render at identity.
-      holder.updateMatrixWorld(true);
-      holder.matrixAutoUpdate = false;
-      inst.traverse((obj) => {
-        obj.updateMatrix();
-        obj.matrixAutoUpdate = false;
+      const yaw = Math.random() * Math.PI * 2;
+      // Spawn via InstancedMesh bucket — replaces the previous
+      // `tpl.clone(true)` deep clone, which was the single biggest
+      // per-chunk hitch on outbreak_city (a few ms per building × 1
+      // building per chunk × 2 chunks built per frame = visible stutter
+      // every second while streaming). The bucket InstancedMeshes are
+      // created once on first spawn of each unique template and reused
+      // across every chunk for the rest of the session.
+      const handle = addTemplateInstance(tpl, scene, {
+        x: tx,
+        y: -cachedMinY * scale,
+        z: tz,
+        yaw,
+        scale,
       });
-      cityPropGroups.push(holder);
-      visionBlockers.push(holder);
-      registerStaticCollider(holder, 0.2, "cityBuilding");
+      if (!handle) continue;
+
+      const proxy = new THREE.Object3D();
+      proxy.position.set(tx, 0, tz);
+      proxy.userData.instancedHandle = handle;
+      proxy.userData.modelId = "cityBuilding";
+      cityPropGroups.push(proxy);
+
+      // Register InstancedMeshes as global vision blockers ONCE per bucket
+      // (raycasts against an InstancedMesh hit any populated instance).
+      if (handle.firstSpawn) {
+        for (const m of handle.bucket.meshes) visionBlockers.push(m.instMesh);
+      }
+      registerStaticColliderFromBox(
+        proxy,
+        getInstanceWorldBox(handle, _tmpWorldBox),
+        0.2,
+        "cityBuilding",
+      );
     }
   }
 
