@@ -3763,24 +3763,29 @@ function movePlayer(dt) {
   camera.rotation.x = player.pitch;
 }
 
+// Shared geometry + material for ammo pickups. Same rationale as material
+// drops above — kill-rate-driven allocation churn, shadow cost on tiny
+// objects that don't visually need it. The two variants (city/rural) cover
+// every ammo-pickup shape the game spawns; map switching is free.
+const _ammoPickupGeoCity = new THREE.BoxGeometry(0.48, 0.2, 0.34);
+const _ammoPickupGeoRural = new THREE.BoxGeometry(0.35, 0.35, 0.35);
+_ammoPickupGeoCity.userData.preventDispose = true;
+_ammoPickupGeoRural.userData.preventDispose = true;
+const _ammoPickupMatCity = new THREE.MeshStandardMaterial({ color: 0xb87a42, emissive: 0x2a1808, roughness: 0.55, metalness: 0.2 });
+const _ammoPickupMatRural = new THREE.MeshStandardMaterial({ color: 0xd0e56b, emissive: 0x4d5f14 });
+
 function maybeDropPickup(position) {
   if (Math.random() < 0.35) {
+    _enforcePickupCap();
     const onCity = activeMapConfig.id === "outbreak_city";
     const ammoIndex = Math.floor(Math.random() * player.weapons.length);
     const ammoWeapon = player.weapons[ammoIndex];
     const pickup = new THREE.Mesh(
-      onCity
-        ? new THREE.BoxGeometry(0.48, 0.2, 0.34)
-        : new THREE.BoxGeometry(0.35, 0.35, 0.35),
-      new THREE.MeshStandardMaterial(
-        onCity
-          ? { color: 0xb87a42, emissive: 0x2a1808, roughness: 0.55, metalness: 0.2 }
-          : { color: 0xd0e56b, emissive: 0x4d5f14 },
-      ),
+      onCity ? _ammoPickupGeoCity : _ammoPickupGeoRural,
+      onCity ? _ammoPickupMatCity : _ammoPickupMatRural,
     );
     pickup.position.copy(position);
     pickup.position.y = terrainHeight(position.x, position.z) + 0.4;
-    pickup.castShadow = true;
     scene.add(pickup);
     pickups.push({ mesh: pickup, spin: Math.random() * 2 + 1, ammoIndex, ammoType: ammoWeapon?.ammoType || ammoWeapon?.name || "Ammo" });
   }
@@ -4065,7 +4070,12 @@ function updatePickups(dt) {
         materials[p.materialType] += gain;
         onMaterialCollected(missionGenerator, p.materialType, gain);
         scene.remove(p.mesh);
-        disposeOwnedObject3D(p.mesh);
+        // Use disposeObject3D (not disposeOwnedObject3D) — the geometry and
+        // material are SHARED module-scope pool assets and must never be
+        // disposed. disposeObject3D respects geometry.userData.preventDispose
+        // and only disposes materials flagged with disposeWithMesh, which
+        // pickup materials are not.
+        disposeObject3D(p.mesh);
         pickups.splice(i, 1);
         messageEl.textContent = `Picked up ${p.materialType}! (${materials[p.materialType]} total)`;
         playSfx("ui_click", 0.8);
@@ -4079,7 +4089,7 @@ function updatePickups(dt) {
       syncPlayerAmmoFields(player);
       player.hp = Math.min(getPlayerMaxHealth(), player.hp + 8);
       scene.remove(p.mesh);
-      disposeOwnedObject3D(p.mesh);
+      disposeObject3D(p.mesh); // see note above — pickup resources are shared
       pickups.splice(i, 1);
       messageEl.textContent = `Picked up ${gain} ${ammoWeapon.ammoType || ammoWeapon.name} ammo and +hp.`;
     }
@@ -4898,22 +4908,50 @@ function updateWeather(dt) { updateWeatherSystem(weatherState, dt, player.positi
 function clearWeather() { clearWeatherSystem(weatherState); }
 
 // ─── Scavenging / Materials ─────────────────────────────────────────────────
+// Shared geometry + per-type materials for material drops. The old code
+// allocated a fresh BoxGeometry + MeshStandardMaterial per kill, then
+// disposed them when the pickup was collected — a steady cycle of GPU
+// allocations during combat that compounded with corpse + decal churn.
+// castShadow used to be true on these 0.25-unit cubes, which adds a shadow
+// map render per drop for almost no visible payoff. Disabled below.
+const _materialDropGeo = new THREE.BoxGeometry(0.25, 0.25, 0.25);
+_materialDropGeo.userData.preventDispose = true;
+const _materialDropMats = {
+  scrap:     new THREE.MeshStandardMaterial({ color: 0x888888, emissive: 0x888888, emissiveIntensity: 0.2, roughness: 0.7 }),
+  wood:      new THREE.MeshStandardMaterial({ color: 0x8b6914, emissive: 0x8b6914, emissiveIntensity: 0.2, roughness: 0.7 }),
+  metal:     new THREE.MeshStandardMaterial({ color: 0xa0a8b0, emissive: 0xa0a8b0, emissiveIntensity: 0.2, roughness: 0.7 }),
+  cloth:     new THREE.MeshStandardMaterial({ color: 0x6b5a3e, emissive: 0x6b5a3e, emissiveIntensity: 0.2, roughness: 0.7 }),
+  chemicals: new THREE.MeshStandardMaterial({ color: 0x44aa44, emissive: 0x44aa44, emissiveIntensity: 0.2, roughness: 0.7 }),
+};
+
+// Cap simultaneous pickups+drops on the ground. The pickups array holds both
+// ammo pickups and material drops. With ~80% combined drop rate per kill and
+// the user reporting 45 kills in <60s, this array can hit 30-40 entries fast
+// — each one a mesh the renderer has to draw + iterate every frame for the
+// spin animation. Capping prevents the open-world map from becoming a sea
+// of glowing cubes that drag framerate.
+const MAX_PICKUPS = 40;
+function _enforcePickupCap() {
+  while (pickups.length >= MAX_PICKUPS) {
+    const oldest = pickups.shift();
+    scene.remove(oldest.mesh);
+    // Geometry + material are SHARED (post-pooling fix) — do not dispose;
+    // that would yank the resource out from under every live pickup.
+  }
+}
+
 function spawnMaterialDrop(position) {
+  _enforcePickupCap();
   const roll = Math.random();
   let type = "scrap";
-  let color = 0x888888;
-  if (roll < 0.25) { type = "wood"; color = 0x8b6914; }
-  else if (roll < 0.5) { type = "metal"; color = 0xa0a8b0; }
-  else if (roll < 0.7) { type = "cloth"; color = 0x6b5a3e; }
-  else if (roll < 0.85) { type = "chemicals"; color = 0x44aa44; }
+  if (roll < 0.25) type = "wood";
+  else if (roll < 0.5) type = "metal";
+  else if (roll < 0.7) type = "cloth";
+  else if (roll < 0.85) type = "chemicals";
 
-  const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(0.25, 0.25, 0.25),
-    new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.2, roughness: 0.7 }),
-  );
+  const mesh = new THREE.Mesh(_materialDropGeo, _materialDropMats[type]);
   mesh.position.copy(position);
   mesh.position.y = terrainHeight(position.x, position.z) + 0.3;
-  mesh.castShadow = true;
   scene.add(mesh);
   pickups.push({ mesh, spin: Math.random() * 3 + 1, isMaterial: true, materialType: type });
 }
@@ -6082,25 +6120,47 @@ function maybeDrawEnemyHealthBars(dt) {
 // ─── Floating Damage Numbers ──────────────────────────────────────────────────
 const _projVec = new THREE.Vector3();
 const MAX_FLOATING_DAMAGE = 40;
+// DOM element pool for floating damage numbers. The old code created a fresh
+// <div> with a 10-property cssText per kill and `.remove()`'d it when the
+// number expired (~0.7s). On a streak (player reported a ×19 streak at 45
+// kills/54s), the create+style+appendChild+remove churn was a measurable
+// per-frame cost on top of the per-frame transform/opacity updates each
+// active number does. Pooling means we allocate MAX_FLOATING_DAMAGE elements
+// ONCE up-front and just toggle their textContent + visibility on reuse.
+const _floatingDamagePool = [];
+function _acquireFloatingDamageEl(isHeadshot) {
+  let el = _floatingDamagePool.pop();
+  if (!el) {
+    el = document.createElement("div");
+    el.style.cssText = [
+      "position:absolute",
+      "font-family:'Segoe UI',sans-serif",
+      "text-shadow:0 1px 3px rgba(0,0,0,0.9)",
+      "pointer-events:none",
+      "user-select:none",
+      "white-space:nowrap",
+      "will-change:transform,opacity",
+    ].join(";");
+    damageNumContainer.appendChild(el);
+  }
+  // Only the style props that vary per use get touched on every acquire.
+  el.style.fontSize = isHeadshot ? "16px" : "13px";
+  el.style.fontWeight = isHeadshot ? "900" : "700";
+  el.style.color = isHeadshot ? "#ff4444" : "#ffdd88";
+  el.style.display = "block";
+  return el;
+}
+function _releaseFloatingDamageEl(el) {
+  el.style.display = "none";
+  _floatingDamagePool.push(el);
+}
+
 function spawnFloatingDamage(worldPosition, amount, isHeadshot = false) {
   if (!amount || amount <= 0) return;
   if (floatingDamageNums.length >= MAX_FLOATING_DAMAGE) return;
-  const el = document.createElement("div");
+  const el = _acquireFloatingDamageEl(isHeadshot);
   const rounded = Math.round(amount);
   el.textContent = isHeadshot ? `${rounded}!` : `${rounded}`;
-  el.style.cssText = [
-    "position:absolute",
-    "font-family:'Segoe UI',sans-serif",
-    `font-size:${isHeadshot ? "16px" : "13px"}`,
-    `font-weight:${isHeadshot ? "900" : "700"}`,
-    `color:${isHeadshot ? "#ff4444" : "#ffdd88"}`,
-    "text-shadow:0 1px 3px rgba(0,0,0,0.9)",
-    "pointer-events:none",
-    "user-select:none",
-    "white-space:nowrap",
-    "will-change:transform,opacity",
-  ].join(";");
-  damageNumContainer.appendChild(el);
 
   // Project world position to screen
   _projVec.copy(worldPosition).project(camera);
@@ -6124,7 +6184,7 @@ function updateFloatingDamageNums(dt) {
     const n = floatingDamageNums[i];
     n.life += dt;
     if (n.life >= n.maxLife) {
-      n.el.remove();
+      _releaseFloatingDamageEl(n.el);
       floatingDamageNums.splice(i, 1);
       continue;
     }
@@ -7564,7 +7624,17 @@ _corpseHeadGeo.userData.preventDispose = true;
 // recompile because the prewarm precompiles emissive-enabled standard mat),
 // and the geometry is still shared.
 const _corpseBodyTemplateMat = new THREE.MeshStandardMaterial({ color: 0x5a6b4a, roughness: 0.9 });
+// Cap corpses on the ground. Player reported lag after 45 kills with corpses
+// piling up — every corpse is 2 meshes the renderer has to frustum-cull and
+// the corpse loop has to iterate. 25 corpses is enough that the kill streak
+// feels rewarding without paying the cost of an unbounded graveyard.
+const MAX_CORPSES = 25;
 function createZombieCorpse(position, type, rotationY) {
+  if (zombieCorpses.length >= MAX_CORPSES) {
+    const oldest = zombieCorpses.shift();
+    scene.remove(oldest.mesh);
+    disposeObject3D(oldest.mesh);
+  }
   const corpse = new THREE.Group();
   const corpseBodyMat = _corpseBodyTemplateMat.clone();
   corpseBodyMat.userData.disposeWithMesh = true;
