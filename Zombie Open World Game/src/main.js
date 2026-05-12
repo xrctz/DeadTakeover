@@ -843,13 +843,13 @@ const CHUNK_STREAM_BOOST_SECONDS = 8;
 // Was 1 — one chunk built per frame as the player moves means a tiny hitch
 // every time the streaming radius advances. 2 covers normal-speed movement
 // without the player ever waiting on a chunk to materialize.
-const CHUNK_BUILD_DRAIN_BASE = 2;
-// Was 3 — even with the bbox cache fix that cut city-chunk cost in half,
-// building 3 chunks per frame still risked ~30ms hitches during the 8-second
-// boost window after a teleport. 2 spreads the same amount of work across
-// twice the frames, trading a slightly longer streaming-in period for a
-// hitch-free one. The streaming boost duration is 8s so the player won't
-// notice the slower fill.
+const CHUNK_BUILD_DRAIN_BASE = 1;
+// Reduced from 2 → 1 for Outbreak City and dense maps. At chunkRadius=3,
+// Outbreak City has 49 active chunks. Building 2 per frame costs ~15-20ms
+// each (terrain vertex loop + InstancedMesh building placement + prop
+// scheduling). Dropping to 1 per frame means the fill takes ~24 extra
+// frames but eliminates the streaming hitch entirely. During the 8s boost
+// window after teleport/respawn, drain stays at 2 for faster recovery.
 const CHUNK_BUILD_DRAIN_BOOST = 2;
 const MAX_VALID_WORLD_ABS = chunkSize * (chunkRadius + 1) * 8;
 
