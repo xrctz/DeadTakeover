@@ -174,7 +174,7 @@ export function createJeepMesh() {
   hlR.position.set(0.7, 0.95, 2.1);
 
   group.add(body, hood, cabin, windshield, rollBarL, rollBarR, rollBarTop, fl, fr, bl, br, frontBumper, rearBumper, hlL, hlR);
-  group.traverse((obj) => { if (obj instanceof THREE.Mesh) obj.castShadow = true; });
+  group.traverse((obj) => { if (obj instanceof THREE.Mesh) obj.castShadow = false; });
   return { mesh: group, seats: 4, wheels: [fl, fr, bl, br] };
 }
 
@@ -222,7 +222,7 @@ export function createTruckMesh() {
   hlR.position.set(0.6, 1.15, 2.1);
 
   group.add(cab, cabTop, windshield, bedFloor, bedSideL, bedSideR, bedTail, fl, fr, mbl, mbr, bl, br, hlL, hlR);
-  group.traverse((obj) => { if (obj instanceof THREE.Mesh) obj.castShadow = true; });
+  group.traverse((obj) => { if (obj instanceof THREE.Mesh) obj.castShadow = false; });
   return { mesh: group, seats: 2, wheels: [fl, fr, mbl, mbr, bl, br] };
 }
 
@@ -272,7 +272,7 @@ export function createMotorcycleMesh() {
   headlight.position.set(0, 1.05, 0.62);
 
   group.add(body, tank, seat, handleStem, handleBar, forkL, forkR, frontWheel, rearWheel, headlight);
-  group.traverse((obj) => { if (obj instanceof THREE.Mesh) obj.castShadow = true; });
+  group.traverse((obj) => { if (obj instanceof THREE.Mesh) obj.castShadow = false; });
   return { mesh: group, seats: 1, wheels: [frontWheel, rearWheel] };
 }
 
@@ -329,7 +329,7 @@ export function createSedanMesh() {
   tlR.position.set(0.62, 0.78, -1.83);
 
   group.add(body, hood, trunk, cabin, windshield, rearWindow, sideWindowL, sideWindowR, fl, fr, bl, br, frontBumper, rearBumper, grille, hlL, hlR, tlL, tlR);
-  group.traverse((obj) => { if (obj instanceof THREE.Mesh) obj.castShadow = true; });
+  group.traverse((obj) => { if (obj instanceof THREE.Mesh) obj.castShadow = false; });
   return { mesh: group, seats: 4, wheels: [fl, fr, bl, br] };
 }
 
@@ -394,7 +394,7 @@ export function createAmbulanceMesh() {
   hlR.position.set(0.62, 0.92, 2.72);
 
   group.add(rearBox, cab, cabTop, hood, windshield, sideWindowL, sideWindowR, stripeL, stripeR, rearStripe, crossVertical, crossHorizontal, roofRack, redBeacon, blueBeacon, fl, fr, bl, br, frontBumper, rearBumper, hlL, hlR);
-  group.traverse((obj) => { if (obj instanceof THREE.Mesh) obj.castShadow = true; });
+  group.traverse((obj) => { if (obj instanceof THREE.Mesh) obj.castShadow = false; });
   return { mesh: group, seats: 2, wheels: [fl, fr, bl, br] };
 }
 
@@ -444,7 +444,7 @@ export function createATVMesh() {
   headlight.position.set(0, 0.98, 0.75);
 
   group.add(base, frontCowling, rearCowling, seat, frontAxle, rearAxle, handleStem, handleBar, fl, fr, bl, br, frontRack, rearRack, headlight);
-  group.traverse((obj) => { if (obj instanceof THREE.Mesh) obj.castShadow = true; });
+  group.traverse((obj) => { if (obj instanceof THREE.Mesh) obj.castShadow = false; });
   return { mesh: group, seats: 1, wheels: [fl, fr, bl, br] };
 }
 
