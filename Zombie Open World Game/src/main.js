@@ -280,7 +280,7 @@ const renderer = new THREE.WebGLRenderer({
 renderer.setSize(window.innerWidth, window.innerHeight);
 // Initial pixel ratio must not depend on adaptiveQuality yet (declared later).
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, BASE_PIXEL_RATIO_CAP));
-renderer.shadowMap.enabled = true;
+renderer.shadowMap.enabled = false; // deferred until gameplay starts (avoids 300+ms first-frame stall)
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 // The sun position follows the player every frame (open-world trick to keep
 // shadows around them). With autoUpdate=true that re-rasterizes the full
@@ -301,7 +301,7 @@ scene.add(hemi);
 
 const sun = new THREE.DirectionalLight(0xfff4d3, 1.4);
 sun.position.set(30, 45, -10);
-sun.castShadow = true;
+sun.castShadow = false; // deferred until gameplay starts — avoids 300+ms first-frame shadow stall
 sun.shadow.bias = -0.0002;
 sun.shadow.normalBias = 0.02;
 // Reduced from 1024 — the shadow re-render cost was the dominant frame-
@@ -815,6 +815,29 @@ async function loadCityBuildingLibrary() {
       root.userData._maxDim = Math.max(size.x, size.y, size.z, 0.001);
       root.userData._minY = bbox.min.y;
       cityBuildingTemplates.push(root);
+
+      // Pre-compile the InstancedMesh shader for each unique geometry+material
+      // combo in this template. Without this, the first render after a building
+      // is placed compiles the shader synchronously (100-300ms stalls). We create
+      // a scratch InstancedMesh with 1 instance, add it to a temp scene, and call
+      // renderer.compile() to force shader compilation. The scratch mesh is then
+      // removed and disposed.
+      if (renderer) {
+        const tmpScn = new THREE.Scene();
+        root.traverse((obj) => {
+          if (!obj.isMesh) return;
+          const mat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+          if (!obj.geometry || !mat) return;
+          const tmpIM = new THREE.InstancedMesh(obj.geometry, mat, 1);
+          tmpIM.count = 1;
+          tmpScn.add(tmpIM);
+        });
+        if (tmpScn.children.length > 0) {
+          renderer.compile(tmpScn, camera, tmpScn);
+          for (const c of tmpScn.children) { c.geometry = null; c.material = null; }
+          tmpScn.clear();
+        }
+      }
     }
     const loadElapsed = performance.now() - loadT0;
     // #region agent log
@@ -1027,7 +1050,7 @@ const adaptiveQuality = {
     BASE_PIXEL_RATIO_CAP - 0.15,
     BASE_PIXEL_RATIO_CAP - 0.3,
   ],
-  shadowsEnabled: true,
+  shadowsEnabled: true, // desired state; shadow-map deferred until gameplay
   frameSamples: [],
   averageFrameMs: 16.7,
 };
@@ -1420,6 +1443,15 @@ function setMenuMode(mode) {
 function startPlaying() {
   paused = false;
   gameState = "PLAYING";
+  // Enable shadows deferred from bootstrap (avoids 300+ms first-frame
+  // shadow-map stall). resetWorldForNewMap already enables via
+  // applyAdaptiveQuality; this is a safety net if shadows are still off.
+  if (!renderer.shadowMap.enabled) {
+    renderer.shadowMap.enabled = true;
+    sun.castShadow = true;
+    adaptiveQuality.shadowsEnabled = true;
+    renderer.shadowMap.needsUpdate = true;
+  }
   menuOverlayEl.classList.add("is-hidden");
   menuOverlayEl.inert = true;
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
@@ -9420,6 +9452,15 @@ startBtnEl.addEventListener("click", async () => {
     startTransitionActive = false;
     window.location.reload();
     return;
+  }
+  // Enable shadows now (deferred from bootstrap to avoid 300+ms first-frame
+  // menu stall). Must happen BEFORE prewarmShaders so shadow-map shader
+  // variants are included in the compile pass.
+  if (!renderer.shadowMap.enabled) {
+    renderer.shadowMap.enabled = true;
+    sun.castShadow = true;
+    adaptiveQuality.shadowsEnabled = true;
+    renderer.shadowMap.needsUpdate = true;
   }
   // Brief feedback during the ~200-800ms shader prewarm freeze. Without this,
   // players think the Start button is broken because pointer lock hasn't
