@@ -745,7 +745,6 @@ function createCityStreetGroundTexture() {
 
 async function loadCityBuildingLibrary() {
   if (cityBuildingTemplates.length) return;
-  const loadT0 = performance.now();
   const names = [
     "building-skyscraper-a.glb",
     "building-skyscraper-b.glb",
@@ -839,10 +838,6 @@ async function loadCityBuildingLibrary() {
         }
       }
     }
-    const loadElapsed = performance.now() - loadT0;
-    // #region agent log
-    console.log(JSON.stringify({loc:'cityLib',templates:cityBuildingTemplates.length,ms:Math.round(loadElapsed*100)/100}));
-    // #endregion
   } catch {
     cityBuildingTemplates.length = 0;
   }
@@ -2573,7 +2568,6 @@ function queueChunkBuild(cx, cz, key) {
 }
 
 function drainChunkBuildQueue(maxBuilds = CHUNK_BUILD_DRAIN_BASE) {
-  const t0 = performance.now();
   let built = 0;
   while (built < maxBuilds && chunkBuildQueueHead < chunkBuildQueue.length) {
     const next = chunkBuildQueue[chunkBuildQueueHead++];
@@ -2584,10 +2578,6 @@ function drainChunkBuildQueue(maxBuilds = CHUNK_BUILD_DRAIN_BASE) {
       built += 1;
     }
   }
-  const elapsed = performance.now() - t0;
-  // #region agent log
-  console.log(JSON.stringify({loc:'drain',b:built,ms:Math.round(elapsed*100)/100,ql:chunkBuildQueue.length,gt:Math.round(gameTime*100)/100}));
-  // #endregion
   if (chunkBuildQueueHead > 256 && chunkBuildQueueHead * 2 > chunkBuildQueue.length) {
     chunkBuildQueue.splice(0, chunkBuildQueueHead);
     chunkBuildQueueHead = 0;
@@ -3421,12 +3411,7 @@ function resetWorldForNewMap() {
   // Stagger initial zombie spawns — 8 zombies × 10 meshes each = 80 meshes
   // added to the scene in one frame. Spreading them across the first 2
   // seconds of gameplay eliminates the startup hitch.
-  const spawnT0 = performance.now();
   for (let i = 0; i < 3; i += 1) spawnZombieNearPlayer();
-  const spawnElapsed = performance.now() - spawnT0;
-  // #region agent log
-  console.log(JSON.stringify({loc:'zombieSpawn',count:3,ms:Math.round(spawnElapsed*100)/100,pending:_pendingZombieSpawns}));
-  // #endregion
   _pendingZombieSpawns = 5;
   _pendingZombieSpawnTimer = 0;
   for (let i = 0; i < 3; i += 1) {
@@ -8910,7 +8895,7 @@ function animate(nowMs) {
       lastStreamChunkX = streamChunkX;
       lastStreamChunkZ = streamChunkZ;
     }
-    drainChunkBuildQueue(streamBoostActive ? CHUNK_BUILD_DRAIN_BOOST : CHUNK_BUILD_DRAIN_BASE);
+    drainChunkBuildQueue(streamBoostActive ? (activeMapConfig.id === "outbreak_city" ? 1 : CHUNK_BUILD_DRAIN_BOOST) : CHUNK_BUILD_DRAIN_BASE);
     updateLastSafePlayerPosition();
     // Stagger remaining zombie spawns across the first ~2 seconds of gameplay
     // to avoid the 80-mesh startup hitch from spawning 8 zombies at once.
@@ -9000,12 +8985,7 @@ function animate(nowMs) {
   updateFloatingDamageNums(dt);
   updateVehicleHud();
   flushDirtyBuckets();
-  const renderT0 = performance.now();
   renderer.render(scene, camera);
-  const renderElapsed = performance.now() - renderT0;
-  // #region agent log
-  if (gameTime < 6) console.log(JSON.stringify({loc:'render',rMs:Math.round(renderElapsed*100)/100,fMs:Math.round(frameDt*1000*100)/100,gt:Math.round(gameTime*100)/100,z:zombies.length,dc:renderer.info.render.calls,t:renderer.info.render.triangles}));
-  // #endregion
   maybeDrawEnemyHealthBars(frameDt);
   requestAnimationFrame(animate);
 }
