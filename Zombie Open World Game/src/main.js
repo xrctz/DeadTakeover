@@ -818,7 +818,7 @@ async function loadCityBuildingLibrary() {
     }
     const loadElapsed = performance.now() - loadT0;
     // #region agent log
-    fetch('http://127.0.0.1:7438/ingest/a8e3f5b8-d3f7-469d-ad5b-80268e3675ca',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'549792'},body:JSON.stringify({sessionId:'549792',location:'main.js:818',message:'loadCityBuildingLibrary complete',data:{templates:cityBuildingTemplates.length,elapsedMs:Math.round(loadElapsed*100)/100},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+    console.log(JSON.stringify({loc:'cityLib',templates:cityBuildingTemplates.length,ms:Math.round(loadElapsed*100)/100}));
     // #endregion
   } catch {
     cityBuildingTemplates.length = 0;
@@ -2554,7 +2554,7 @@ function drainChunkBuildQueue(maxBuilds = CHUNK_BUILD_DRAIN_BASE) {
   }
   const elapsed = performance.now() - t0;
   // #region agent log
-  fetch('http://127.0.0.1:7438/ingest/a8e3f5b8-d3f7-469d-ad5b-80268e3675ca',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'549792'},body:JSON.stringify({sessionId:'549792',location:'main.js:2538',message:'drainChunkBuildQueue',data:{maxBuilds,built,elapsedMs:Math.round(elapsed*100)/100,queueLen:chunkBuildQueue.length,gameTime:Math.round(gameTime*100)/100},timestamp:Date.now(),hypothesisId:'A,D'})}).catch(()=>{});
+  console.log(JSON.stringify({loc:'drain',b:built,ms:Math.round(elapsed*100)/100,ql:chunkBuildQueue.length,gt:Math.round(gameTime*100)/100}));
   // #endregion
   if (chunkBuildQueueHead > 256 && chunkBuildQueueHead * 2 > chunkBuildQueue.length) {
     chunkBuildQueue.splice(0, chunkBuildQueueHead);
@@ -3393,7 +3393,7 @@ function resetWorldForNewMap() {
   for (let i = 0; i < 3; i += 1) spawnZombieNearPlayer();
   const spawnElapsed = performance.now() - spawnT0;
   // #region agent log
-  fetch('http://127.0.0.1:7438/ingest/a8e3f5b8-d3f7-469d-ad5b-80268e3675ca',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'549792'},body:JSON.stringify({sessionId:'549792',location:'main.js:3387',message:'initial zombie spawn',data:{count:3,elapsedMs:Math.round(spawnElapsed*100)/100,pending:_pendingZombieSpawns},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+  console.log(JSON.stringify({loc:'zombieSpawn',count:3,ms:Math.round(spawnElapsed*100)/100,pending:_pendingZombieSpawns}));
   // #endregion
   _pendingZombieSpawns = 5;
   _pendingZombieSpawnTimer = 0;
@@ -8972,7 +8972,7 @@ function animate(nowMs) {
   renderer.render(scene, camera);
   const renderElapsed = performance.now() - renderT0;
   // #region agent log
-  if (gameTime < 6) fetch('http://127.0.0.1:7438/ingest/a8e3f5b8-d3f7-469d-ad5b-80268e3675ca',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'549792'},body:JSON.stringify({sessionId:'549792',location:'main.js:8966',message:'renderer.render',data:{renderMs:Math.round(renderElapsed*100)/100,frameMs:Math.round(frameDt*1000*100)/100,gameTime:Math.round(gameTime*100)/100,zombies:zombies.length,drawCalls:renderer.info.render.calls,triangles:renderer.info.render.triangles},timestamp:Date.now(),hypothesisId:'B,E'})}).catch(()=>{});
+  if (gameTime < 6) console.log(JSON.stringify({loc:'render',rMs:Math.round(renderElapsed*100)/100,fMs:Math.round(frameDt*1000*100)/100,gt:Math.round(gameTime*100)/100,z:zombies.length,dc:renderer.info.render.calls,t:renderer.info.render.triangles}));
   // #endregion
   maybeDrawEnemyHealthBars(frameDt);
   requestAnimationFrame(animate);
