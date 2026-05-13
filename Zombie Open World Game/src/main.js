@@ -745,6 +745,7 @@ function createCityStreetGroundTexture() {
 
 async function loadCityBuildingLibrary() {
   if (cityBuildingTemplates.length) return;
+  const loadT0 = performance.now();
   const names = [
     "building-skyscraper-a.glb",
     "building-skyscraper-b.glb",
@@ -815,6 +816,10 @@ async function loadCityBuildingLibrary() {
       root.userData._minY = bbox.min.y;
       cityBuildingTemplates.push(root);
     }
+    const loadElapsed = performance.now() - loadT0;
+    // #region agent log
+    fetch('http://127.0.0.1:7438/ingest/a8e3f5b8-d3f7-469d-ad5b-80268e3675ca',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'549792'},body:JSON.stringify({sessionId:'549792',location:'main.js:818',message:'loadCityBuildingLibrary complete',data:{templates:cityBuildingTemplates.length,elapsedMs:Math.round(loadElapsed*100)/100},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+    // #endregion
   } catch {
     cityBuildingTemplates.length = 0;
   }
@@ -2536,6 +2541,7 @@ function queueChunkBuild(cx, cz, key) {
 }
 
 function drainChunkBuildQueue(maxBuilds = CHUNK_BUILD_DRAIN_BASE) {
+  const t0 = performance.now();
   let built = 0;
   while (built < maxBuilds && chunkBuildQueueHead < chunkBuildQueue.length) {
     const next = chunkBuildQueue[chunkBuildQueueHead++];
@@ -2546,6 +2552,10 @@ function drainChunkBuildQueue(maxBuilds = CHUNK_BUILD_DRAIN_BASE) {
       built += 1;
     }
   }
+  const elapsed = performance.now() - t0;
+  // #region agent log
+  fetch('http://127.0.0.1:7438/ingest/a8e3f5b8-d3f7-469d-ad5b-80268e3675ca',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'549792'},body:JSON.stringify({sessionId:'549792',location:'main.js:2538',message:'drainChunkBuildQueue',data:{maxBuilds,built,elapsedMs:Math.round(elapsed*100)/100,queueLen:chunkBuildQueue.length,gameTime:Math.round(gameTime*100)/100},timestamp:Date.now(),hypothesisId:'A,D'})}).catch(()=>{});
+  // #endregion
   if (chunkBuildQueueHead > 256 && chunkBuildQueueHead * 2 > chunkBuildQueue.length) {
     chunkBuildQueue.splice(0, chunkBuildQueueHead);
     chunkBuildQueueHead = 0;
@@ -3379,7 +3389,12 @@ function resetWorldForNewMap() {
   // Stagger initial zombie spawns — 8 zombies × 10 meshes each = 80 meshes
   // added to the scene in one frame. Spreading them across the first 2
   // seconds of gameplay eliminates the startup hitch.
+  const spawnT0 = performance.now();
   for (let i = 0; i < 3; i += 1) spawnZombieNearPlayer();
+  const spawnElapsed = performance.now() - spawnT0;
+  // #region agent log
+  fetch('http://127.0.0.1:7438/ingest/a8e3f5b8-d3f7-469d-ad5b-80268e3675ca',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'549792'},body:JSON.stringify({sessionId:'549792',location:'main.js:3387',message:'initial zombie spawn',data:{count:3,elapsedMs:Math.round(spawnElapsed*100)/100,pending:_pendingZombieSpawns},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+  // #endregion
   _pendingZombieSpawns = 5;
   _pendingZombieSpawnTimer = 0;
   for (let i = 0; i < 3; i += 1) {
@@ -8953,7 +8968,12 @@ function animate(nowMs) {
   updateFloatingDamageNums(dt);
   updateVehicleHud();
   flushDirtyBuckets();
+  const renderT0 = performance.now();
   renderer.render(scene, camera);
+  const renderElapsed = performance.now() - renderT0;
+  // #region agent log
+  if (gameTime < 6) fetch('http://127.0.0.1:7438/ingest/a8e3f5b8-d3f7-469d-ad5b-80268e3675ca',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'549792'},body:JSON.stringify({sessionId:'549792',location:'main.js:8966',message:'renderer.render',data:{renderMs:Math.round(renderElapsed*100)/100,frameMs:Math.round(frameDt*1000*100)/100,gameTime:Math.round(gameTime*100)/100,zombies:zombies.length,drawCalls:renderer.info.render.calls,triangles:renderer.info.render.triangles},timestamp:Date.now(),hypothesisId:'B,E'})}).catch(()=>{});
+  // #endregion
   maybeDrawEnemyHealthBars(frameDt);
   requestAnimationFrame(animate);
 }
