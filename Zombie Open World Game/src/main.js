@@ -996,6 +996,9 @@ let chunkStreamingBoostUntil = 0;
 let frameBudgetDebt = 0;
 const lastSafePlayerPosition = new THREE.Vector3(0, 1.8, 0);
 let allowSpawnPositionUntil = 0;
+// Staggered zombie spawns — remaining zombies to spawn after initial burst.
+let _pendingZombieSpawns = 0;
+let _pendingZombieSpawnTimer = 0;
 const playerProgression = loadProgression();
 
 /** Scavenging / Crafting materials */
@@ -3373,7 +3376,12 @@ function resetWorldForNewMap() {
   // gradually instead of a frozen screen.
   initWeather();
   updateDayNight();
-  for (let i = 0; i < 8; i += 1) spawnZombieNearPlayer();
+  // Stagger initial zombie spawns — 8 zombies × 10 meshes each = 80 meshes
+  // added to the scene in one frame. Spreading them across the first 2
+  // seconds of gameplay eliminates the startup hitch.
+  for (let i = 0; i < 3; i += 1) spawnZombieNearPlayer();
+  _pendingZombieSpawns = 5;
+  _pendingZombieSpawnTimer = 0;
   for (let i = 0; i < 3; i += 1) {
     teammates.push(createTeammate(2 + i * 2.5, 2 + i, i, akTemplateRef, remingtonTemplateRef, pistolTemplateRef));
   }
@@ -8857,6 +8865,16 @@ function animate(nowMs) {
     }
     drainChunkBuildQueue(streamBoostActive ? CHUNK_BUILD_DRAIN_BOOST : CHUNK_BUILD_DRAIN_BASE);
     updateLastSafePlayerPosition();
+    // Stagger remaining zombie spawns across the first ~2 seconds of gameplay
+    // to avoid the 80-mesh startup hitch from spawning 8 zombies at once.
+    if (_pendingZombieSpawns > 0) {
+      _pendingZombieSpawnTimer -= dt;
+      if (_pendingZombieSpawnTimer <= 0) {
+        spawnZombieNearPlayer();
+        _pendingZombieSpawns -= 1;
+        _pendingZombieSpawnTimer = 0.35;
+      }
+    }
     updateZombies(dt);
     // If a zombie killed the player this frame, skip all further combat updates.
     if (!gameOver) {
