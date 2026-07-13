@@ -150,6 +150,79 @@ body,
   line-height: 1.45;
 }
 
+/* ─── Settings Panel ──────────────────────────────────────────────── */
+.settings-panel {
+  text-align: left;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius-md);
+  background: var(--bg-chip);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-panel.is-hidden {
+  display: none;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: 130px 1fr 52px;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.settings-row label {
+  font-weight: 600;
+}
+
+.settings-row-toggle {
+  grid-template-columns: 130px 1fr;
+  justify-items: start;
+}
+
+.settings-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent-amber);
+  cursor: pointer;
+}
+
+.settings-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-amber);
+  cursor: pointer;
+}
+
+.settings-value {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent-green);
+  text-align: right;
+}
+
+.settings-reset {
+  align-self: flex-end;
+  border: 1px solid var(--border-dim);
+  background: var(--btn-bg);
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.settings-reset:hover {
+  background: var(--btn-bg-hover);
+  border-color: var(--border-mid);
+}
+
 .menu-credits {
   font-size: 10px;
   opacity: 0.55;

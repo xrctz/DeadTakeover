@@ -27,6 +27,7 @@ import {
 } from "./combat/weaponSystem.js";
 import { showUpgradeBench, hideUpgradeBench } from "./ui/upgradeBench.js";
 import { createInventoryOverlay, showInventory, hideInventory } from "./ui/inventory.js";
+import { loadUserSettings, saveUserSettings, createSettingsPanel } from "./ui/settingsMenu.js";
 import { createEventDirector, updateEventDirector, executeEvent, isSurvivorAlive, damageSurvivor, clearCamp, EVENT_TYPES } from "./game/events.js";
 import { WORLD_MAPS, mapById } from "./core/config.js";
 import { createWeather, initWeather as initWeatherSystem, updateWeather as updateWeatherSystem, clearWeather as clearWeatherSystem } from "./world/weather.js";
@@ -156,6 +157,7 @@ const continueBtnEl = document.querySelector("#btn-continue");
 const resumeBtnEl = document.querySelector("#btn-resume");
 const restartBtnEl = document.querySelector("#btn-restart");
 const audioBtnEl = document.querySelector("#btn-audio");
+const settingsBtnEl = document.querySelector("#btn-settings");
 const skyVignetteEl = document.querySelector("#sky-vignette");
 const mapGridEl = document.querySelector("#map-grid");
 const mapSelectEl = document.querySelector("#map-select");
@@ -256,13 +258,30 @@ document.body.appendChild(vehicleHudEl);
 const vehicleHpLabelEl = vehicleHudEl.querySelector("#vehicle-hp-label");
 const vehicleHpFillEl = vehicleHudEl.querySelector("#vehicle-hp-fill");
 
+// ─── User settings (sensitivity / FOV / feedback toggles) ────────────────────
+const userSettings = loadUserSettings();
+// Preserves the original 75° → 48° ADS zoom ratio at any custom base FOV.
+const ADS_ZOOM_RATIO = 48 / 75;
+
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x4a5a52);
 scene.fog = new THREE.Fog(0x6a7862, 60, 260);
 
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 500);
+const camera = new THREE.PerspectiveCamera(userSettings.fov, window.innerWidth / window.innerHeight, 0.1, 500);
 camera.position.set(0, 1.8, 6);
 scene.add(camera);
+
+const settingsPanelUI = createSettingsPanel(userSettings, (updated) => {
+  saveUserSettings(updated);
+  // FOV applies immediately; sensitivity and toggles are read at use-sites.
+  camera.fov = updated.fov;
+  camera.updateProjectionMatrix();
+});
+menuOverlayEl.querySelector(".menu-actions")?.insertAdjacentElement("afterend", settingsPanelUI.panel);
+settingsBtnEl?.addEventListener("click", () => {
+  playSfx("ui_click", 1);
+  settingsPanelUI.panel.classList.toggle("is-hidden");
+});
 
 // Detect embedded mode (iframe in the hub website). When embedded, the canvas
 // is smaller and the user is rarely doing precision aiming at 4K crispness, so
@@ -1304,6 +1323,7 @@ function updateAudioButtonLabel() {
 // Combat feedback based on "juice" best practices: use smooth trauma-based shake
 // and short, throttled freeze frames for heavy impacts instead of random jitter.
 function addScreenShake(amount) {
+  if (!userSettings.screenShake) return;
   screenShake = Math.min(1, screenShake + amount);
 }
 
@@ -1382,6 +1402,8 @@ function setAudioScene(mode) {
 
 function setMenuMode(mode) {
   menuOverlayEl.inert = false;
+  // Start each menu visit with the settings panel collapsed.
+  settingsPanelUI.panel.classList.add("is-hidden");
   if (mode === "title") {
     gameState = "MENU_TITLE";
     menuTitleEl.textContent = "DeadTakeover";
@@ -3926,7 +3948,7 @@ function shoot() {
   }
   player.shootCooldown = weapon.fireDelay;
   player.bobTime += 0.03;
-  camera.fov = 77.5;
+  camera.fov = userSettings.fov + 2.5;
   camera.updateProjectionMatrix();
   weaponRecoil = weapon.recoil;
   weaponKick = 1;
@@ -6706,6 +6728,7 @@ function _releaseFloatingDamageEl(el) {
 }
 
 function spawnFloatingDamage(worldPosition, amount, isHeadshot = false) {
+  if (!userSettings.damageNumbers) return;
   if (!amount || amount <= 0) return;
   if (floatingDamageNums.length >= MAX_FLOATING_DAMAGE) return;
   const el = _acquireFloatingDamageEl(isHeadshot);
@@ -8980,7 +9003,7 @@ function animate(nowMs) {
     } // end if (!gameOver) combat block
   }
 
-  const adsFov = isADS ? 48 : 75;
+  const adsFov = isADS ? userSettings.fov * ADS_ZOOM_RATIO : userSettings.fov;
   camera.fov += (adsFov - camera.fov) * Math.min(1, dt * 13);
   camera.updateProjectionMatrix();
   if (screenShake > 0 && dt > 0) {
@@ -9057,8 +9080,8 @@ document.addEventListener("pointerlockchange", () => {
 
 window.addEventListener("mousemove", (e) => {
   if (!pointerLocked) return;
-  player.yaw -= e.movementX * 0.0024;
-  player.pitch -= e.movementY * 0.0021;
+  player.yaw -= e.movementX * 0.0024 * userSettings.sensitivity;
+  player.pitch -= e.movementY * 0.0021 * userSettings.sensitivity;
   player.pitch = Math.max(-1.35, Math.min(1.35, player.pitch));
   lookSwayX += e.movementX;
   lookSwayY += e.movementY;
