@@ -4491,7 +4491,10 @@ function applyZombieDamage(index, damageAmount, isHeadshot = false, isMelee = fa
       messageEl.textContent = `${bossName || "Boss"} down! +2 grenades, +2 skill points!`;
       addKillFeedEntry(`💀 ${(bossName || "BOSS").toUpperCase()} DOWN +${reward}pts`, "#ff6600");
       // Always drop a chunk of materials on boss kill.
-      for (let m = 0; m < 4; m++) spawnMaterialDrop(pos);
+      for (let m = 0; m < 4; m++) {
+        _projVec.set(px, py, pz);
+        spawnMaterialDrop(_projVec);
+      }
     } else {
       score += isHeadshot ? 150 : 50;
       const label = isHeadshot ? `💀 ${zombieType} HEADSHOT! +150` : `💀 ${zombieType} +50`;
@@ -9123,7 +9126,6 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyJ" && gameState === "PLAYING" && !gameOver) throwMolotov();
   if (e.code === "KeyK" && gameState === "PLAYING" && !gameOver && !e.repeat) placeLandMine();
   if (e.code === "KeyL" && gameState === "PLAYING" && !gameOver && !e.repeat) placeSpikeTrap();
-  if (e.code === "KeyP" && gameState === "PLAYING" && !gameOver && !e.repeat) placeTurret();
   if (e.code === "KeyF" && gameState === "PLAYING" && !gameOver && !e.repeat) {
     if (activeVehicle) exitVehicle();
     else {
