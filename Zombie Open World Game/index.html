@@ -18,6 +18,7 @@
     </style>
     <script>
       (function(){
+        function initLoader(){
         var loader=document.createElement('div');
         loader.id='game-loader';
         loader.innerHTML='<h1 style="font-size:1.6rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase">DeadTakeover Protocol</h1>'
@@ -46,6 +47,12 @@
           obs.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['width','height']});
         },500);
         setTimeout(function(){obs.disconnect();window.__hideLoader();},28000);
+        }
+        // This script runs from <head>, before <body> exists — deferring to
+        // DOMContentLoaded is required or insertBefore throws on every load
+        // and the loading screen never appears.
+        if(document.body)initLoader();
+        else document.addEventListener('DOMContentLoaded',initLoader);
       })();
     </script>
   </head>
