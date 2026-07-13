@@ -7,6 +7,7 @@ const RECIPES = [
   { id: "land_mine", name: "Land Mine", icon: "💣", cost: { scrap: 2, metal: 1 }, description: "Placed trap, 5m trigger radius" },
   { id: "spike_trap", name: "Spike Trap", icon: "🗡️", cost: { wood: 3, scrap: 1 }, description: "Damages zombies that walk over it" },
   { id: "turret", name: "Auto-Turret", icon: "🔫", cost: { metal: 4, scrap: 3, chemicals: 2 }, description: "Automated sentry, fires at nearby zombies" },
+  { id: "fuel_can", name: "Fuel Can", icon: "⛽", cost: { chemicals: 2, scrap: 1 }, description: "Refuels the vehicle you're in or one nearby (+60%)" },
 ];
 
 export function createInventoryOverlay() {
@@ -70,8 +71,14 @@ function renderRecipes(grid, materials, player, skills, inventoryUI, hooks) {
   grid.innerHTML = "";
   for (const recipe of RECIPES) {
     const canAfford = canAffordRecipe(recipe, materials);
+    // Optional situational gate — hooks.canCraft returns true when allowed,
+    // or a string explaining why the recipe is currently unusable
+    // (e.g. Fuel Can with no vehicle nearby).
+    const gate = typeof hooks.canCraft === "function" ? hooks.canCraft(recipe.id) : true;
+    const gateReason = gate === true ? null : gate;
+    const craftable = canAfford && !gateReason;
     const card = document.createElement("div");
-    card.className = "recipe-card" + (canAfford ? "" : " is-locked");
+    card.className = "recipe-card" + (craftable ? "" : " is-locked");
 
     const costStr = Object.entries(recipe.cost).map(([mat, amt]) => `${amt} ${mat}`).join(", ");
     card.innerHTML = `
@@ -81,10 +88,11 @@ function renderRecipes(grid, materials, player, skills, inventoryUI, hooks) {
       </div>
       <div class="recipe-desc">${recipe.description}</div>
       <div class="recipe-cost">${costStr}</div>
-      <button class="recipe-btn" ${canAfford ? "" : "disabled"}>Craft</button>
+      ${gateReason ? `<div class="recipe-blocked">${gateReason}</div>` : ""}
+      <button class="recipe-btn" ${craftable ? "" : "disabled"}>Craft</button>
     `;
 
-    if (canAfford) {
+    if (craftable) {
       card.querySelector(".recipe-btn").addEventListener("click", () => {
         craftRecipe(recipe, materials, player, skills, hooks);
         renderMaterials(inventoryUI.materialsGrid, materials);

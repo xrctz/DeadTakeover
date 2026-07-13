@@ -120,6 +120,16 @@ export function isUnlocked(progression, type, id) {
   return progression.unlocks.some((u) => u.type === type && u.id === id);
 }
 
+/** Next locked reward above the current level, or null when everything is
+ *  unlocked. Returns { level, unlock } for menu display. */
+export function getNextUnlock(progression) {
+  const levels = Object.keys(UNLOCKS).map(Number).sort((a, b) => a - b);
+  for (const lvl of levels) {
+    if (lvl > progression.level) return { level: lvl, unlock: UNLOCKS[lvl] };
+  }
+  return null;
+}
+
 export function getLevel(progression) {
   return progression.level;
 }

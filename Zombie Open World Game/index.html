@@ -18,6 +18,7 @@
     </style>
     <script>
       (function(){
+        function initLoader(){
         var loader=document.createElement('div');
         loader.id='game-loader';
         loader.innerHTML='<h1 style="font-size:1.6rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase">DeadTakeover Protocol</h1>'
@@ -46,6 +47,12 @@
           obs.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['width','height']});
         },500);
         setTimeout(function(){obs.disconnect();window.__hideLoader();},28000);
+        }
+        // This script runs from <head>, before <body> exists — deferring to
+        // DOMContentLoaded is required or insertBefore throws on every load
+        // and the loading screen never appears.
+        if(document.body)initLoader();
+        else document.addEventListener('DOMContentLoaded',initLoader);
       })();
     </script>
   </head>
@@ -67,8 +74,9 @@
             <button id="btn-resume" class="is-hidden">Resume</button>
             <button id="btn-restart" class="is-hidden">Restart Run</button>
             <button id="btn-audio">Audio: On</button>
+            <button id="btn-settings">Settings</button>
           </div>
-            <p class="menu-help">WASD Move · Shift Sprint · C Crouch · Space Jump · Click/LMB Shoot · RMB Aim Down Sights · R Reload · 1-7 Weapon Slots · Q/E Swap Weapon · G Grenade · J Molotov · K Land Mine · L Spike Trap · V Noise Maker · F Melee Knife / Enter Vehicle · B Build Barricade · N Switch Build Type · U Weapon Upgrade Bench · Tab Inventory · T Team Swap · P Pause · M Audio. Scavenge materials from zombies! Craft items at your inventory! Build wood/metal barricades! Upgrade weapons at benches! Watch for ★ Supply Drops! Special Zombies: Spitter (acid), Hunter (pounces), Charger (charges), Crawler (low)! Corpses revive if not headshot!</p>
+            <p class="menu-help">WASD Move · Shift Sprint · C Crouch · Space Jump · Click/LMB Shoot · RMB Aim Down Sights · R Reload / Repair Vehicle · 1-9,0 Weapon Slots · Q/E Swap Weapon · G Grenade · J Molotov · K Land Mine · L Spike Trap · V Noise Maker · F Melee Knife / Enter Vehicle · B Build Barricade · N Switch Build Type · U Weapon Upgrade Bench · Tab Inventory · T Team Swap · P Pause · M Audio. Scavenge materials from zombies! Craft items at your inventory! Build wood/metal barricades! Upgrade weapons at benches! Watch for ★ Supply Drops! Special Zombies: Spitter (acid), Hunter (pounces), Charger (charges), Crawler (low)! Corpses revive if not headshot!</p>
           <p class="menu-credits">Buildings &amp; street atlas: Kenney.nl (CC0). Pistol GLB: Webaverse (github.com/webaverse/pistol). Music: Kevin MacLeod (incompetech.com) — Title: Floating Cities; maps + Outbreak City: Movement Proposition, Darkest Child, Frost Waltz, Crossing the Chasm, Volatile Reaction, District Four. CC BY — see incompetech.com.</p>
         </div>
       </div>

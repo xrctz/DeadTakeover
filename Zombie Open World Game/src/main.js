@@ -22,10 +22,12 @@ import {
   createRevolverMesh,
   createMinigunMesh,
   createWorldWeaponMesh,
-  initDefaultWeapons,
+  initWeaponsForProgression,
+  reapplyWeaponUpgrades,
 } from "./combat/weaponSystem.js";
 import { showUpgradeBench, hideUpgradeBench } from "./ui/upgradeBench.js";
 import { createInventoryOverlay, showInventory, hideInventory } from "./ui/inventory.js";
+import { loadUserSettings, saveUserSettings, createSettingsPanel } from "./ui/settingsMenu.js";
 import { createEventDirector, updateEventDirector, executeEvent, isSurvivorAlive, damageSurvivor, clearCamp, EVENT_TYPES } from "./game/events.js";
 import { WORLD_MAPS, mapById } from "./core/config.js";
 import { createWeather, initWeather as initWeatherSystem, updateWeather as updateWeatherSystem, clearWeather as clearWeatherSystem } from "./world/weather.js";
@@ -60,7 +62,7 @@ import {
   startAmbientLoop as startAmbientLoopEngine,
 } from "./audio/engine.js";
 import { createMissionGenerator, updateMissions, onMaterialCollected, onZombieKilled, getMissionRewards, formatMissionStatus, MISSION_TYPES } from "./game/missionSystem.js";
-import { loadProgression, addGlobalXP, getLevel, getXPForCurrentLevel, formatProgression } from "./game/progression.js";
+import { loadProgression, addGlobalXP, getLevel, getXPForCurrentLevel, formatProgression, getNextUnlock } from "./game/progression.js";
 import gunMetalDiffuseUrl from "./assets/textures/gun_metal_diffuse.jpg";
 import gunMetalNormalUrl from "./assets/textures/gun_metal_normal.jpg";
 import gunMetalRoughUrl from "./assets/textures/gun_metal_rough.jpg";
@@ -155,6 +157,7 @@ const continueBtnEl = document.querySelector("#btn-continue");
 const resumeBtnEl = document.querySelector("#btn-resume");
 const restartBtnEl = document.querySelector("#btn-restart");
 const audioBtnEl = document.querySelector("#btn-audio");
+const settingsBtnEl = document.querySelector("#btn-settings");
 const skyVignetteEl = document.querySelector("#sky-vignette");
 const mapGridEl = document.querySelector("#map-grid");
 const mapSelectEl = document.querySelector("#map-select");
@@ -250,18 +253,38 @@ const floatingDamageNums = [];
 const vehicleHudEl = document.createElement("div");
 vehicleHudEl.id = "vehicle-hud";
 vehicleHudEl.style.cssText = "position:fixed;bottom:140px;left:50%;transform:translateX(-50%);pointer-events:none;display:none;z-index:15;";
-vehicleHudEl.innerHTML = `<div style="background:rgba(12,18,12,0.8);border:1px solid rgba(196,218,165,0.38);border-radius:8px;padding:7px 14px;text-align:center;color:#eaf5dd;font-size:12px;min-width:160px;"><div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;opacity:.8;margin-bottom:4px;">Vehicle</div><div id="vehicle-hp-label" style="font-weight:700;margin-bottom:4px;">HP 100 / 100</div><div style="height:8px;border-radius:999px;background:rgba(34,45,30,0.9);border:1px solid rgba(220,238,196,0.18);overflow:hidden;"><div id="vehicle-hp-fill" style="height:100%;background:linear-gradient(90deg,#8b1a1a,#d94040);transition:width .12s linear;width:100%;"></div></div></div>`;
+vehicleHudEl.innerHTML = `<div style="background:rgba(12,18,12,0.8);border:1px solid rgba(196,218,165,0.38);border-radius:8px;padding:7px 14px;text-align:center;color:#eaf5dd;font-size:12px;min-width:160px;"><div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;opacity:.8;margin-bottom:4px;">Vehicle — R Repair · F Exit · H Horn</div><div id="vehicle-hp-label" style="font-weight:700;margin-bottom:4px;">HP 100 / 100</div><div style="height:8px;border-radius:999px;background:rgba(34,45,30,0.9);border:1px solid rgba(220,238,196,0.18);overflow:hidden;"><div id="vehicle-hp-fill" style="height:100%;background:linear-gradient(90deg,#8b1a1a,#d94040);transition:width .12s linear;width:100%;"></div></div></div>`;
 document.body.appendChild(vehicleHudEl);
 const vehicleHpLabelEl = vehicleHudEl.querySelector("#vehicle-hp-label");
 const vehicleHpFillEl = vehicleHudEl.querySelector("#vehicle-hp-fill");
+
+// ─── User settings (sensitivity / FOV / feedback toggles) ────────────────────
+const userSettings = loadUserSettings();
+// Preserves the original 75° → 48° ADS zoom ratio at any custom base FOV.
+const ADS_ZOOM_RATIO = 48 / 75;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x4a5a52);
 scene.fog = new THREE.Fog(0x6a7862, 60, 260);
 
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 500);
+const camera = new THREE.PerspectiveCamera(userSettings.fov, window.innerWidth / window.innerHeight, 0.1, 500);
 camera.position.set(0, 1.8, 6);
 scene.add(camera);
+
+const settingsPanelUI = createSettingsPanel(userSettings, (updated) => {
+  saveUserSettings(updated);
+  // FOV applies immediately; sensitivity and toggles are read at use-sites.
+  camera.fov = updated.fov;
+  camera.updateProjectionMatrix();
+});
+menuOverlayEl.querySelector(".menu-actions")?.insertAdjacentElement("afterend", settingsPanelUI.panel);
+settingsBtnEl?.addEventListener("click", () => {
+  playSfx("ui_click", 1);
+  const nowVisible = settingsPanelUI.panel.classList.toggle("is-hidden") === false;
+  // The menu card scrolls; the panel lives below the buttons and can be
+  // outside the visible area when it expands.
+  if (nowVisible) settingsPanelUI.panel.scrollIntoView({ block: "nearest", behavior: "smooth" });
+});
 
 // Detect embedded mode (iframe in the hub website). When embedded, the canvas
 // is smaller and the user is rarely doing precision aiming at 4K crispness, so
@@ -877,6 +900,10 @@ const CHUNK_BUILD_DRAIN_BASE = 1;
 const CHUNK_BUILD_DRAIN_BOOST = 2;
 const MAX_VALID_WORLD_ABS = chunkSize * (chunkRadius + 1) * 8;
 
+// Global progression (level, XP, unlocks) — loaded before the player object
+// so the starting loadout can include weapons unlocked in previous runs.
+const playerProgression = loadProgression();
+
 const player = {
   position: new THREE.Vector3(0, 1.8, 0),
   velocityY: 0,
@@ -888,7 +915,7 @@ const player = {
   ammo: 20,
   reserveAmmo: 100,
   activeWeapon: 0,
-  weapons: initDefaultWeapons(),
+  weapons: initWeaponsForProgression(playerProgression),
   kills: 0,
   shootCooldown: 0,
   reloadTimer: 0,
@@ -1022,7 +1049,6 @@ let allowSpawnPositionUntil = 0;
 // Staggered zombie spawns — remaining zombies to spawn after initial burst.
 let _pendingZombieSpawns = 0;
 let _pendingZombieSpawnTimer = 0;
-const playerProgression = loadProgression();
 
 /** Scavenging / Crafting materials */
 const materials = {
@@ -1300,6 +1326,7 @@ function updateAudioButtonLabel() {
 // Combat feedback based on "juice" best practices: use smooth trauma-based shake
 // and short, throttled freeze frames for heavy impacts instead of random jitter.
 function addScreenShake(amount) {
+  if (!userSettings.screenShake) return;
   screenShake = Math.min(1, screenShake + amount);
 }
 
@@ -1378,10 +1405,14 @@ function setAudioScene(mode) {
 
 function setMenuMode(mode) {
   menuOverlayEl.inert = false;
+  // Start each menu visit with the settings panel collapsed.
+  settingsPanelUI.panel.classList.add("is-hidden");
   if (mode === "title") {
     gameState = "MENU_TITLE";
     menuTitleEl.textContent = "DeadTakeover";
-    menuSubtitleEl.textContent = "Survive with your teammates.";
+    const next = getNextUnlock(playerProgression);
+    const nextStr = next ? ` · Next unlock: ${next.unlock.name} at Lvl ${next.level}` : "";
+    menuSubtitleEl.textContent = `Survive with your teammates. ${formatProgression(playerProgression)}${nextStr}`;
     startBtnEl.classList.remove("is-hidden");
     resumeBtnEl.classList.add("is-hidden");
     restartBtnEl.classList.remove("is-hidden");
@@ -1551,16 +1582,23 @@ function loadRun() {
     spikeTrapCount = save.spikeTrapCount ?? 0;
     turretCount = save.turretCount ?? 0;
     noiseMakerCount = save.noiseMakerCount ?? 2;
-    if (save.weapons) {
-      for (let i = 0; i < Math.min(save.weapons.length, player.weapons.length); i++) {
-        player.weapons[i].ammo = save.weapons[i].ammo ?? player.weapons[i].ammo;
-        player.weapons[i].reserve = save.weapons[i].reserve ?? player.weapons[i].reserve;
-        if (save.weapons[i].upgrades) {
-          player.weapons[i].upgrades = { ...save.weapons[i].upgrades };
+    if (Array.isArray(save.weapons)) {
+      // Match by name, not index — the loadout can grow between sessions as
+      // global progression unlocks new weapons.
+      for (const savedWeapon of save.weapons) {
+        const weapon = player.weapons.find((w) => w.name === savedWeapon.name);
+        if (!weapon) continue;
+        weapon.ammo = savedWeapon.ammo ?? weapon.ammo;
+        weapon.reserve = savedWeapon.reserve ?? weapon.reserve;
+        if (savedWeapon.upgrades) {
+          weapon.upgrades = { ...savedWeapon.upgrades };
+          // Saves only persist upgrade tiers — recompute the stat effects
+          // (mag size, damage, fire rate) so purchases survive a reload.
+          reapplyWeaponUpgrades(weapon);
         }
       }
     }
-    player.activeWeapon = save.activeWeapon ?? 0;
+    player.activeWeapon = THREE.MathUtils.clamp(save.activeWeapon ?? 0, 0, player.weapons.length - 1);
     syncPlayerAmmoFields(player);
     waveSpawnBudget = 18 + wave * 8;
     settings.maxZombies = Math.min(80, 24 + wave * 5);
@@ -3221,12 +3259,9 @@ function resetWorldForNewMap() {
   gameTime = 0;
   lastDamageTime = -999;
   player.kills = 0;
-  const defaults = initDefaultWeapons();
-  for (let i = 0; i < Math.min(player.weapons.length, defaults.length); i++) {
-    player.weapons[i].ammo = defaults[i].ammo;
-    player.weapons[i].reserve = defaults[i].reserve;
-    player.weapons[i].upgrades = {};
-  }
+  // Rebuild the loadout from scratch: restores base stats/ammo, clears
+  // upgrades, and picks up any weapons unlocked through global progression.
+  player.weapons = initWeaponsForProgression(playerProgression);
   syncPlayerAmmoFields(player);
   score = 0;
   killStreak = 0;
@@ -3493,7 +3528,7 @@ function findClearZombieSpawnNear(originX, originZ, minDistance = 25, maxDistanc
 }
 
 // ─── Vehicle System ─────────────────────────────────────────────────────────
-import { createVehicle, updateVehicle, damageVehicle, repairVehicle, refuelVehicle, upgradeVehicleArmor, upgradeVehicleEngine, VEHICLE_TYPES } from "./entities/vehicle.js";
+import { createVehicle, updateVehicle, damageVehicle, repairVehicle, getVehicleRepairCost, refuelVehicle, VEHICLE_TYPES } from "./entities/vehicle.js";
 
 function spawnVehiclesForMap() {
   const countByMap = {
@@ -3541,6 +3576,43 @@ function findNearestVehicle() {
   return nearest;
 }
 
+/** The vehicle a crafted Fuel Can would refill: the one being driven, or the
+ *  closest non-full vehicle within range. */
+function findNearestRefuelableVehicle(maxDistance = 10) {
+  if (activeVehicle && !activeVehicle.destroyed && activeVehicle.fuel < activeVehicle.maxFuel - 1) {
+    return activeVehicle;
+  }
+  let nearest = null;
+  let nearestDist = maxDistance;
+  for (const v of vehicles) {
+    if (v.destroyed || v.fuel >= v.maxFuel - 1) continue;
+    const d = player.position.distanceTo(v.mesh.position);
+    if (d < nearestDist) {
+      nearestDist = d;
+      nearest = v;
+    }
+  }
+  return nearest;
+}
+
+/** R while driving: patch the vehicle up with scavenged materials. */
+function tryRepairActiveVehicle() {
+  const vehicle = activeVehicle;
+  if (!vehicle || vehicle.destroyed) return;
+  if (vehicle.hp >= vehicle.maxHp) {
+    messageEl.textContent = "Vehicle already at full health.";
+    return;
+  }
+  const cost = getVehicleRepairCost(vehicle);
+  if (repairVehicle(vehicle, materials)) {
+    playSfx("ui_click", 1.1);
+    updateHUDMaterials();
+    messageEl.textContent = `Vehicle repaired +60 HP (-${cost.scrap} scrap, -${cost.metal} metal).`;
+  } else {
+    messageEl.textContent = `Repair needs ${cost.scrap} scrap + ${cost.metal} metal.`;
+  }
+}
+
 function enterVehicle(vehicle) {
   if (vehicle.destroyed || vehicle.occupied) return false;
   vehicle.occupied = true;
@@ -3553,7 +3625,7 @@ function enterVehicle(vehicle) {
   camera.position.copy(vehicle.mesh.position);
   camera.position.y += 2.5;
   firstPersonWeapon.rig.visible = false;
-  messageEl.textContent = `Entered ${vehicle.type.toUpperCase()}! WASD drive, Space brake, F exit, H horn.`;
+  messageEl.textContent = `Entered ${vehicle.type.toUpperCase()}! WASD drive, Space brake, R repair, F exit, H horn.`;
   return true;
 }
 
@@ -3916,7 +3988,7 @@ function shoot() {
   }
   player.shootCooldown = weapon.fireDelay;
   player.bobTime += 0.03;
-  camera.fov = 77.5;
+  camera.fov = userSettings.fov + 2.5;
   camera.updateProjectionMatrix();
   weaponRecoil = weapon.recoil;
   weaponKick = 1;
@@ -4491,7 +4563,10 @@ function applyZombieDamage(index, damageAmount, isHeadshot = false, isMelee = fa
       messageEl.textContent = `${bossName || "Boss"} down! +2 grenades, +2 skill points!`;
       addKillFeedEntry(`💀 ${(bossName || "BOSS").toUpperCase()} DOWN +${reward}pts`, "#ff6600");
       // Always drop a chunk of materials on boss kill.
-      for (let m = 0; m < 4; m++) spawnMaterialDrop(pos);
+      for (let m = 0; m < 4; m++) {
+        _projVec.set(px, py, pz);
+        spawnMaterialDrop(_projVec);
+      }
     } else {
       score += isHeadshot ? 150 : 50;
       const label = isHeadshot ? `💀 ${zombieType} HEADSHOT! +150` : `💀 ${zombieType} +50`;
@@ -5581,6 +5656,12 @@ function closeUpgradeBench() {
 const inventoryCraftHooks = {
   getWeaponReserveCap,
   syncPlayerAmmoFields,
+  canCraft(recipeId) {
+    if (recipeId === "fuel_can" && !findNearestRefuelableVehicle()) {
+      return "Needs a vehicle with room in the tank within 10m";
+    }
+    return true;
+  },
   onCrafted(recipeId) {
     if (recipeId === "molotov") {
       molotovCount = Math.min(molotovCount + 1, 8);
@@ -5596,6 +5677,13 @@ const inventoryCraftHooks = {
       messageEl.textContent = `Crafted auto-turret! (${turretCount} — press G to deploy)`;
     } else if (recipeId === "ammo_pack") {
       messageEl.textContent = "Ammo pack crafted — all ammo reserves topped up.";
+    } else if (recipeId === "fuel_can") {
+      const vehicle = findNearestRefuelableVehicle();
+      if (vehicle) {
+        refuelVehicle(vehicle, vehicle.maxFuel * 0.6);
+        const pct = Math.round((vehicle.fuel / vehicle.maxFuel) * 100);
+        messageEl.textContent = `Refueled ${vehicle.type.toUpperCase()} to ${pct}%.`;
+      }
     }
     updateHUDMaterials();
   },
@@ -5671,7 +5759,10 @@ function updateVehicleHud() {
   const fuel = Math.max(0, activeVehicle.fuel || 0);
   const maxFuel = activeVehicle.maxFuel || 100;
   const fuelPct = Math.max(0, Math.min(100, (fuel / maxFuel) * 100));
-  vehicleHpLabelEl.textContent = `${activeVehicle.type.toUpperCase()} — HP ${Math.ceil(hp)}/${maxHp}  Fuel ${Math.ceil(fuelPct)}%`;
+  vehicleHpLabelEl.textContent = fuel <= 0
+    ? `${activeVehicle.type.toUpperCase()} — OUT OF FUEL! Craft a Fuel Can (Tab)`
+    : `${activeVehicle.type.toUpperCase()} — HP ${Math.ceil(hp)}/${maxHp}  Fuel ${Math.ceil(fuelPct)}%`;
+  vehicleHpLabelEl.style.color = fuel <= 0 ? "#ff9966" : fuelPct < 20 ? "#ffcc66" : "";
   vehicleHpFillEl.style.width = `${pct}%`;
   vehicleHpFillEl.style.background = pct > 60
     ? "linear-gradient(90deg,#1a6a1a,#3dba3d)"
@@ -6511,7 +6602,7 @@ function updateObjectiveCompass() {
 function renderWeaponSlotsHUD() {
   if (!weaponSlotsEl) return;
   weaponSlotsEl.innerHTML = "";
-  const slotMap = { 0: "1", 1: "2", 2: "3", 3: "4", 4: "5", 5: "6", 6: "7" };
+  const slotMap = { 0: "1", 1: "2", 2: "3", 3: "4", 4: "5", 5: "6", 6: "7", 7: "8", 8: "9", 9: "0" };
   for (let i = 0; i < player.weapons.length; i++) {
     const w = player.weapons[i];
     const isActive = i === player.activeWeapon;
@@ -6693,6 +6784,7 @@ function _releaseFloatingDamageEl(el) {
 }
 
 function spawnFloatingDamage(worldPosition, amount, isHeadshot = false) {
+  if (!userSettings.damageNumbers) return;
   if (!amount || amount <= 0) return;
   if (floatingDamageNums.length >= MAX_FLOATING_DAMAGE) return;
   const el = _acquireFloatingDamageEl(isHeadshot);
@@ -8967,7 +9059,7 @@ function animate(nowMs) {
     } // end if (!gameOver) combat block
   }
 
-  const adsFov = isADS ? 48 : 75;
+  const adsFov = isADS ? userSettings.fov * ADS_ZOOM_RATIO : userSettings.fov;
   camera.fov += (adsFov - camera.fov) * Math.min(1, dt * 13);
   camera.updateProjectionMatrix();
   if (screenShake > 0 && dt > 0) {
@@ -9044,8 +9136,8 @@ document.addEventListener("pointerlockchange", () => {
 
 window.addEventListener("mousemove", (e) => {
   if (!pointerLocked) return;
-  player.yaw -= e.movementX * 0.0024;
-  player.pitch -= e.movementY * 0.0021;
+  player.yaw -= e.movementX * 0.0024 * userSettings.sensitivity;
+  player.pitch -= e.movementY * 0.0021 * userSettings.sensitivity;
   player.pitch = Math.max(-1.35, Math.min(1.35, player.pitch));
   lookSwayX += e.movementX;
   lookSwayY += e.movementY;
@@ -9056,7 +9148,9 @@ function handleReloadKeyCapture(e) {
   e.preventDefault();
   e.stopImmediatePropagation();
   if (!audioSystem.unlocked) void ensureAudioUnlocked();
-  if (!gameOver && !e.repeat && !inventoryOpen && !upgradeBenchOpen && !activeVehicle) reload();
+  if (gameOver || e.repeat || inventoryOpen || upgradeBenchOpen) return;
+  if (activeVehicle) tryRepairActiveVehicle();
+  else reload();
 }
 
 window.addEventListener("keydown", handleReloadKeyCapture, true);
@@ -9072,6 +9166,7 @@ window.addEventListener("keydown", (e) => {
       "KeyQ", "KeyE", "KeyF", "KeyG", "KeyH", "KeyJ", "KeyK", "KeyL",
       "KeyM", "KeyN", "KeyP", "KeyT", "KeyU", "KeyV", "KeyB", "KeyC",
       "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7",
+      "Digit8", "Digit9", "Digit0",
       "Tab",
     ]);
     if (gameplayKeys.has(e.code)) e.preventDefault();
@@ -9079,7 +9174,10 @@ window.addEventListener("keydown", (e) => {
   if (gameState === "PLAYING" && e.code === "KeyR") {
     e.preventDefault();
     e.stopPropagation();
-    if (!gameOver && !e.repeat && !inventoryOpen && !upgradeBenchOpen && !activeVehicle) reload();
+    if (!gameOver && !e.repeat && !inventoryOpen && !upgradeBenchOpen) {
+      if (activeVehicle) tryRepairActiveVehicle();
+      else reload();
+    }
     return;
   }
   keys.add(e.code);
@@ -9123,7 +9221,6 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyJ" && gameState === "PLAYING" && !gameOver) throwMolotov();
   if (e.code === "KeyK" && gameState === "PLAYING" && !gameOver && !e.repeat) placeLandMine();
   if (e.code === "KeyL" && gameState === "PLAYING" && !gameOver && !e.repeat) placeSpikeTrap();
-  if (e.code === "KeyP" && gameState === "PLAYING" && !gameOver && !e.repeat) placeTurret();
   if (e.code === "KeyF" && gameState === "PLAYING" && !gameOver && !e.repeat) {
     if (activeVehicle) exitVehicle();
     else {
@@ -9152,7 +9249,7 @@ window.addEventListener("keydown", (e) => {
     saveRun();
   }
   if (e.code === "KeyE" && gameState === "PLAYING") doSwapPlayerWeapon();
-  // Direct weapon switching: 1-7 maps to weapon slots
+  // Direct weapon switching: 1-9 and 0 map to weapon slots
   if (!e.shiftKey && !e.repeat && gameState === "PLAYING") {
     if (e.code === "Digit1") { e.preventDefault(); doSwitchToWeapon(0); }
     if (e.code === "Digit2") { e.preventDefault(); doSwitchToWeapon(1); }
@@ -9161,6 +9258,9 @@ window.addEventListener("keydown", (e) => {
     if (e.code === "Digit5") { e.preventDefault(); doSwitchToWeapon(4); }
     if (e.code === "Digit6") { e.preventDefault(); doSwitchToWeapon(5); }
     if (e.code === "Digit7") { e.preventDefault(); doSwitchToWeapon(6); }
+    if (e.code === "Digit8") { e.preventDefault(); doSwitchToWeapon(7); }
+    if (e.code === "Digit9") { e.preventDefault(); doSwitchToWeapon(8); }
+    if (e.code === "Digit0") { e.preventDefault(); doSwitchToWeapon(9); }
   }
   if (e.code === "Tab" && gameState === "PLAYING" && !gameOver && !e.repeat) {
     e.preventDefault();

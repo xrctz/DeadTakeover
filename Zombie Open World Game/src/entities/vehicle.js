@@ -562,9 +562,13 @@ export function damageVehicle(vehicle, amount) {
   return false;
 }
 
+export function getVehicleRepairCost(vehicle) {
+  return { scrap: 2 + vehicle.armorLevel, metal: 1 + Math.floor(vehicle.armorLevel / 2) };
+}
+
 export function repairVehicle(vehicle, materials) {
   if (vehicle.hp >= vehicle.maxHp) return false;
-  const cost = { scrap: 2 + vehicle.armorLevel, metal: 1 + Math.floor(vehicle.armorLevel / 2) };
+  const cost = getVehicleRepairCost(vehicle);
   if ((materials.scrap || 0) < cost.scrap || (materials.metal || 0) < cost.metal) return false;
   materials.scrap -= cost.scrap;
   materials.metal -= cost.metal;

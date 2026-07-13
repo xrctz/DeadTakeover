@@ -74,7 +74,7 @@ Copy the `dist/` output into [ai-game-lab](https://github.com/xrctz/ai-game-lab)
 | Move | `W` `A` `S` `D` |
 | Sprint / Crouch / Jump | `Shift` / `C` / `Space` |
 | Shoot / ADS / Reload | `LMB` / `RMB` / `R` |
-| Weapons | `Q` `E` · slots `1` `2` `3` |
+| Weapons | `Q` `E` · slots `1`–`9`, `0` |
 | Grenade / Melee / Build | `G` / `F` / `B` |
 | Pause / Mute | `P` / `M` |
 

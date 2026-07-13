@@ -32,17 +32,24 @@ This game is focused on high-intensity survival loops inside the browser:
 | Jump | `Space` |
 | Shoot | `LMB` |
 | Aim Down Sights | `RMB` |
-| Reload | `R` |
+| Reload / Repair Vehicle | `R` |
 | Swap Weapon | `Q` / `E` |
-| Weapon Slots | `1` Rifle, `2` Shotgun, `3` Pistol |
-| Throw Grenade | `G` |
+| Weapon Slots | `1`–`9`, `0` (unlocked weapons in order) |
+| Throw Grenade / Use Utility | `G` |
+| Throw Molotov | `J` |
+| Place Land Mine | `K` |
+| Place Spike Trap | `L` |
 | Throw Noise Maker | `V` |
-| Melee Knife | `F` |
+| Melee Knife / Enter & Exit Vehicle | `F` |
 | Build Barricade | `B` |
 | Switch Build Material | `N` |
+| Weapon Upgrade Bench | `U` |
+| Inventory & Crafting | `Tab` |
 | Team Swap | `T` |
 | Pause | `P` |
 | Toggle Audio | `M` |
+
+Mouse sensitivity, field of view, screen shake, and damage numbers can be adjusted from the **Settings** panel on the title or pause menu.
 
 ## Quick Start
 
