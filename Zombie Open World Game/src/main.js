@@ -280,7 +280,10 @@ const settingsPanelUI = createSettingsPanel(userSettings, (updated) => {
 menuOverlayEl.querySelector(".menu-actions")?.insertAdjacentElement("afterend", settingsPanelUI.panel);
 settingsBtnEl?.addEventListener("click", () => {
   playSfx("ui_click", 1);
-  settingsPanelUI.panel.classList.toggle("is-hidden");
+  const nowVisible = settingsPanelUI.panel.classList.toggle("is-hidden") === false;
+  // The menu card scrolls; the panel lives below the buttons and can be
+  // outside the visible area when it expands.
+  if (nowVisible) settingsPanelUI.panel.scrollIntoView({ block: "nearest", behavior: "smooth" });
 });
 
 // Detect embedded mode (iframe in the hub website). When embedded, the canvas
