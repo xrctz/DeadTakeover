@@ -22,7 +22,8 @@ import {
   createRevolverMesh,
   createMinigunMesh,
   createWorldWeaponMesh,
-  initDefaultWeapons,
+  initWeaponsForProgression,
+  reapplyWeaponUpgrades,
 } from "./combat/weaponSystem.js";
 import { showUpgradeBench, hideUpgradeBench } from "./ui/upgradeBench.js";
 import { createInventoryOverlay, showInventory, hideInventory } from "./ui/inventory.js";
@@ -60,7 +61,7 @@ import {
   startAmbientLoop as startAmbientLoopEngine,
 } from "./audio/engine.js";
 import { createMissionGenerator, updateMissions, onMaterialCollected, onZombieKilled, getMissionRewards, formatMissionStatus, MISSION_TYPES } from "./game/missionSystem.js";
-import { loadProgression, addGlobalXP, getLevel, getXPForCurrentLevel, formatProgression } from "./game/progression.js";
+import { loadProgression, addGlobalXP, getLevel, getXPForCurrentLevel, formatProgression, getNextUnlock } from "./game/progression.js";
 import gunMetalDiffuseUrl from "./assets/textures/gun_metal_diffuse.jpg";
 import gunMetalNormalUrl from "./assets/textures/gun_metal_normal.jpg";
 import gunMetalRoughUrl from "./assets/textures/gun_metal_rough.jpg";
@@ -877,6 +878,10 @@ const CHUNK_BUILD_DRAIN_BASE = 1;
 const CHUNK_BUILD_DRAIN_BOOST = 2;
 const MAX_VALID_WORLD_ABS = chunkSize * (chunkRadius + 1) * 8;
 
+// Global progression (level, XP, unlocks) — loaded before the player object
+// so the starting loadout can include weapons unlocked in previous runs.
+const playerProgression = loadProgression();
+
 const player = {
   position: new THREE.Vector3(0, 1.8, 0),
   velocityY: 0,
@@ -888,7 +893,7 @@ const player = {
   ammo: 20,
   reserveAmmo: 100,
   activeWeapon: 0,
-  weapons: initDefaultWeapons(),
+  weapons: initWeaponsForProgression(playerProgression),
   kills: 0,
   shootCooldown: 0,
   reloadTimer: 0,
@@ -1022,7 +1027,6 @@ let allowSpawnPositionUntil = 0;
 // Staggered zombie spawns — remaining zombies to spawn after initial burst.
 let _pendingZombieSpawns = 0;
 let _pendingZombieSpawnTimer = 0;
-const playerProgression = loadProgression();
 
 /** Scavenging / Crafting materials */
 const materials = {
@@ -1381,7 +1385,9 @@ function setMenuMode(mode) {
   if (mode === "title") {
     gameState = "MENU_TITLE";
     menuTitleEl.textContent = "DeadTakeover";
-    menuSubtitleEl.textContent = "Survive with your teammates.";
+    const next = getNextUnlock(playerProgression);
+    const nextStr = next ? ` · Next unlock: ${next.unlock.name} at Lvl ${next.level}` : "";
+    menuSubtitleEl.textContent = `Survive with your teammates. ${formatProgression(playerProgression)}${nextStr}`;
     startBtnEl.classList.remove("is-hidden");
     resumeBtnEl.classList.add("is-hidden");
     restartBtnEl.classList.remove("is-hidden");
@@ -1551,16 +1557,23 @@ function loadRun() {
     spikeTrapCount = save.spikeTrapCount ?? 0;
     turretCount = save.turretCount ?? 0;
     noiseMakerCount = save.noiseMakerCount ?? 2;
-    if (save.weapons) {
-      for (let i = 0; i < Math.min(save.weapons.length, player.weapons.length); i++) {
-        player.weapons[i].ammo = save.weapons[i].ammo ?? player.weapons[i].ammo;
-        player.weapons[i].reserve = save.weapons[i].reserve ?? player.weapons[i].reserve;
-        if (save.weapons[i].upgrades) {
-          player.weapons[i].upgrades = { ...save.weapons[i].upgrades };
+    if (Array.isArray(save.weapons)) {
+      // Match by name, not index — the loadout can grow between sessions as
+      // global progression unlocks new weapons.
+      for (const savedWeapon of save.weapons) {
+        const weapon = player.weapons.find((w) => w.name === savedWeapon.name);
+        if (!weapon) continue;
+        weapon.ammo = savedWeapon.ammo ?? weapon.ammo;
+        weapon.reserve = savedWeapon.reserve ?? weapon.reserve;
+        if (savedWeapon.upgrades) {
+          weapon.upgrades = { ...savedWeapon.upgrades };
+          // Saves only persist upgrade tiers — recompute the stat effects
+          // (mag size, damage, fire rate) so purchases survive a reload.
+          reapplyWeaponUpgrades(weapon);
         }
       }
     }
-    player.activeWeapon = save.activeWeapon ?? 0;
+    player.activeWeapon = THREE.MathUtils.clamp(save.activeWeapon ?? 0, 0, player.weapons.length - 1);
     syncPlayerAmmoFields(player);
     waveSpawnBudget = 18 + wave * 8;
     settings.maxZombies = Math.min(80, 24 + wave * 5);
@@ -3221,12 +3234,9 @@ function resetWorldForNewMap() {
   gameTime = 0;
   lastDamageTime = -999;
   player.kills = 0;
-  const defaults = initDefaultWeapons();
-  for (let i = 0; i < Math.min(player.weapons.length, defaults.length); i++) {
-    player.weapons[i].ammo = defaults[i].ammo;
-    player.weapons[i].reserve = defaults[i].reserve;
-    player.weapons[i].upgrades = {};
-  }
+  // Rebuild the loadout from scratch: restores base stats/ammo, clears
+  // upgrades, and picks up any weapons unlocked through global progression.
+  player.weapons = initWeaponsForProgression(playerProgression);
   syncPlayerAmmoFields(player);
   score = 0;
   killStreak = 0;
@@ -6514,7 +6524,7 @@ function updateObjectiveCompass() {
 function renderWeaponSlotsHUD() {
   if (!weaponSlotsEl) return;
   weaponSlotsEl.innerHTML = "";
-  const slotMap = { 0: "1", 1: "2", 2: "3", 3: "4", 4: "5", 5: "6", 6: "7" };
+  const slotMap = { 0: "1", 1: "2", 2: "3", 3: "4", 4: "5", 5: "6", 6: "7", 7: "8", 8: "9", 9: "0" };
   for (let i = 0; i < player.weapons.length; i++) {
     const w = player.weapons[i];
     const isActive = i === player.activeWeapon;
@@ -9075,6 +9085,7 @@ window.addEventListener("keydown", (e) => {
       "KeyQ", "KeyE", "KeyF", "KeyG", "KeyH", "KeyJ", "KeyK", "KeyL",
       "KeyM", "KeyN", "KeyP", "KeyT", "KeyU", "KeyV", "KeyB", "KeyC",
       "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7",
+      "Digit8", "Digit9", "Digit0",
       "Tab",
     ]);
     if (gameplayKeys.has(e.code)) e.preventDefault();
@@ -9154,7 +9165,7 @@ window.addEventListener("keydown", (e) => {
     saveRun();
   }
   if (e.code === "KeyE" && gameState === "PLAYING") doSwapPlayerWeapon();
-  // Direct weapon switching: 1-7 maps to weapon slots
+  // Direct weapon switching: 1-9 and 0 map to weapon slots
   if (!e.shiftKey && !e.repeat && gameState === "PLAYING") {
     if (e.code === "Digit1") { e.preventDefault(); doSwitchToWeapon(0); }
     if (e.code === "Digit2") { e.preventDefault(); doSwitchToWeapon(1); }
@@ -9163,6 +9174,9 @@ window.addEventListener("keydown", (e) => {
     if (e.code === "Digit5") { e.preventDefault(); doSwitchToWeapon(4); }
     if (e.code === "Digit6") { e.preventDefault(); doSwitchToWeapon(5); }
     if (e.code === "Digit7") { e.preventDefault(); doSwitchToWeapon(6); }
+    if (e.code === "Digit8") { e.preventDefault(); doSwitchToWeapon(7); }
+    if (e.code === "Digit9") { e.preventDefault(); doSwitchToWeapon(8); }
+    if (e.code === "Digit0") { e.preventDefault(); doSwitchToWeapon(9); }
   }
   if (e.code === "Tab" && gameState === "PLAYING" && !gameOver && !e.repeat) {
     e.preventDefault();

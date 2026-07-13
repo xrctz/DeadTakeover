@@ -398,3 +398,34 @@ export function createWorldWeaponMesh(type, scale = 1) {
 export function initDefaultWeapons() {
   return WEAPON_DEFINITIONS.filter((w) => w.unlocked).map((w) => ({ ...w, upgrades: {} }));
 }
+
+/** Build the run loadout: default weapons plus any unlocked through global
+ *  progression (progression unlock ids are indices into WEAPON_DEFINITIONS). */
+export function initWeaponsForProgression(progression) {
+  const unlockedIds = new Set(
+    (progression?.unlocks || [])
+      .filter((u) => u.type === "weapon")
+      .map((u) => u.id),
+  );
+  return WEAPON_DEFINITIONS
+    .filter((w, index) => w.unlocked || unlockedIds.has(index))
+    .map((w) => ({ ...w, upgrades: {} }));
+}
+
+/** Re-apply owned upgrade tiers to a weapon whose stats are at base values.
+ *  Used after loading a saved run, where only the tier map is persisted. */
+export function reapplyWeaponUpgrades(weapon) {
+  const tiers = weapon.upgrades;
+  if (!tiers || Object.keys(tiers).length === 0) return;
+  // Restore base stats first so repeated calls never compound multipliers.
+  if (weapon._baseStats) {
+    weapon.magSize = weapon._baseStats.magSize;
+    weapon.damage = weapon._baseStats.damage;
+    weapon.fireDelay = weapon._baseStats.fireDelay;
+    weapon._baseStats = null;
+  }
+  weapon.upgrades = {};
+  for (const [upgradeId, tier] of Object.entries(tiers)) {
+    for (let t = 0; t < tier; t++) applyWeaponUpgrade(weapon, upgradeId);
+  }
+}
